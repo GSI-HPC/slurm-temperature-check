@@ -357,17 +357,26 @@ Re-verify against the versions actually deployed.
   (`Documentation/hwmon/sysfs-interface.rst`). `/sys/class/hwmon/hwmonN`
   is a symlink to the device's `hwmon` directory; `device` inside it
   points back at the parent that owns the sensors, and that parent's
-  `subsystem` symlink names its bus.
+  `subsystem` symlink names its bus. That parent is not always a bus
+  device: a driver may register its hwmon device below a class device —
+  `nvme` below `/sys/class/nvme`, an ACPI thermal zone below
+  `/sys/class/thermal` — whose `subsystem` names the class instead. Each
+  such device carries a `device` link of its own, and the chain has to be
+  followed until it reaches a bus.
 - libsensors composes a chip name from the driver's `name` attribute plus
-  the parent's bus and address (`lib/sysfs.c`, `lib/access.c`): `%s-i2c-%d-%02x`
-  with a decimal bus and hex address, `%s-pci-%04x` with the address
-  folded from the BDF as `(slot << 3) | func` — which is why k10temp at
-  `0000:00:18.3` is `k10temp-pci-00c3` — and `%s-isa-%04x` for platform
-  and ACPI devices, whose address is the id after the dot in the device
-  name, so a dual-socket node shows `coretemp-isa-0000` and
-  `coretemp-isa-0001`. This program reproduces that naming as a
-  convenience; `--list` prints what it actually computed on the node,
-  which is authoritative.
+  the bus and address of that device (`lib/sysfs.c`, `lib/access.c`):
+  `%s-i2c-%d-%02x` with a decimal bus and hex address; `%s-pci-%04x` with
+  the address folded from the BDF as `(bus << 8) | (slot << 3) | func`,
+  which is why k10temp at `0000:00:18.3` is `k10temp-pci-00c3` and a GPU
+  at `0000:04:00.0` is `amdgpu-pci-0400`; `%s-acpi-%x` for ACPI devices,
+  which have one address rather than a foldable one, so an ACPI thermal
+  zone is `acpitz-acpi-0`; and `%s-isa-%04x` for platform devices, whose
+  address is the id after the dot in the device name, so a dual-socket
+  node shows `coretemp-isa-0000` and `coretemp-isa-0001`. Dropping the
+  bus from the PCI address, or stopping at the first `device` link, makes
+  distinct devices compose one name. This program reproduces the naming
+  as a convenience and only for these buses; `--list` prints what it
+  actually computed on the node, which is authoritative.
 - DMI: `/sys/devices/virtual/dmi/id/board_name` is the SMBIOS type 2
   "base board product name", mode 0444. `board_serial` and `product_uuid`
   beside it are 0400.

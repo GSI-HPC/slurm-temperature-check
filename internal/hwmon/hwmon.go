@@ -4,11 +4,14 @@
 // Package hwmon reads temperatures straight from the kernel's hwmon class in
 // sysfs, which is the same place the lm_sensors userspace reads them from.
 //
-// Chip names are composed the way libsensors composes them, so the names in
-// this package's configuration are the names `sensors` prints. Reproducing
-// that naming is a convenience, not a correctness requirement: the program's
-// --list mode prints the names it computed on the node itself, which is what
-// an operator should paste into the configuration.
+// Chip names are composed the way libsensors composes them, so that the names
+// in this package's configuration are the names `sensors` prints for the
+// buses a server mainboard exposes its temperatures on: PCI, I2C, SPI, ACPI
+// and the platform devices libsensors calls ISA. Reproducing that naming is a
+// convenience, not a correctness requirement, and it is not guaranteed for
+// every bus the kernel has: the program's --list mode prints the names it
+// computed on the node itself, and that is what an operator should paste into
+// the configuration.
 package hwmon
 
 import (
@@ -150,11 +153,17 @@ func chipSensors(dir, chip string) ([]Sensor, error) {
 	return out, nil
 }
 
+// maxDeviceLinks bounds the walk up the "device" links. Real chains are two
+// or three links long; the bound exists only so that a malformed tree cannot
+// spin here.
+const maxDeviceLinks = 8
+
 // chipName composes the libsensors-style name of the hwmon device in dir.
 //
 // libsensors builds it from the driver's "name" attribute plus the bus type
-// and address of the parent device (lib/sysfs.c, lib/access.c). The bus type
-// comes from the parent's subsystem, the address from its sysfs name.
+// and address of the device that owns the sensors (lib/sysfs.c, lib/access.c).
+// The bus type comes from that device's subsystem, the address from its sysfs
+// name.
 func chipName(dir string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "name"))
 	if err != nil {
@@ -165,48 +174,74 @@ func chipName(dir string) (string, error) {
 		return "", errors.New("empty hwmon name")
 	}
 
-	// The "device" symlink points at the parent that owns the sensors; its
-	// own "subsystem" symlink names the bus. Devices registered without a
-	// parent (software monitors such as acpitz on some platforms) have no
-	// device link and are "virtual" to libsensors.
+	// The "device" symlink points at the parent that owns the sensors.
+	// Devices registered without a parent (software monitors such as some
+	// platforms' thermal zones) have no device link and are "virtual" to
+	// libsensors.
 	devPath, err := filepath.EvalSymlinks(filepath.Join(dir, "device"))
 	if err != nil {
 		return prefix + "-virtual-0", nil
 	}
+
+	// That parent does not always name a bus. A driver may register its
+	// hwmon device below a class device — nvme below /sys/class/nvme, a
+	// wireless PHY below ieee80211, an ACPI thermal zone below
+	// /sys/class/thermal — and the class device's own subsystem is the class,
+	// not a bus. Each of them carries a "device" link pointing further up, so
+	// the chain is followed until it reaches a bus. Stopping at the first
+	// link would name every such device "<driver>-virtual-0", and since those
+	// names collide, a node with two of them would have all but one dropped
+	// from a prefix selection.
+	for i := 0; i < maxDeviceLinks; i++ {
+		if suffix, ok := busSuffix(devPath); ok {
+			return prefix + suffix, nil
+		}
+		next, err := filepath.EvalSymlinks(filepath.Join(devPath, "device"))
+		if err != nil || next == devPath {
+			break
+		}
+		devPath = next
+	}
+	return prefix + "-virtual-0", nil
+}
+
+// busSuffix returns the "-<bus>-<address>" half of a libsensors chip name for
+// the device at devPath, or false when its subsystem is not a bus this
+// package knows how to address.
+func busSuffix(devPath string) (string, bool) {
+	link, err := filepath.EvalSymlinks(filepath.Join(devPath, "subsystem"))
+	if err != nil {
+		return "", false
+	}
 	devName := filepath.Base(devPath)
 
-	subsys := ""
-	if p, err := filepath.EvalSymlinks(filepath.Join(devPath, "subsystem")); err == nil {
-		subsys = filepath.Base(p)
-	}
-
-	switch subsys {
+	switch filepath.Base(link) {
 	case "i2c":
 		// sysfs name is "<bus>-<addr>" with a decimal bus and a hex address,
 		// e.g. "20-0050"; libsensors prints the address in two hex digits.
 		bus, addr, ok := splitPair(devName, 10, 16)
 		if !ok {
-			break
+			return "", false
 		}
-		return fmt.Sprintf("%s-i2c-%d-%02x", prefix, bus, addr), nil
+		return fmt.Sprintf("-i2c-%d-%02x", bus, addr), true
 	case "spi":
 		// sysfs name is "spi<bus>.<chipselect>", both decimal.
 		bus, cs, ok := splitPair(strings.TrimPrefix(devName, "spi"), 10, 10)
 		if !ok {
-			break
+			return "", false
 		}
-		return fmt.Sprintf("%s-spi-%d-%x", prefix, bus, cs), nil
+		return fmt.Sprintf("-spi-%d-%x", bus, cs), true
 	case "pci":
-		// sysfs name is "domain:bus:slot.func"; libsensors folds slot and
-		// function into one address, (slot << 3) | func, and prints neither
-		// the domain nor the bus. k10temp at 0000:00:18.3 is therefore
-		// "k10temp-pci-00c3".
-		slot, fn, ok := pciSlotFunc(devName)
+		addr, ok := pciAddress(devName)
 		if !ok {
-			break
+			return "", false
 		}
-		return fmt.Sprintf("%s-pci-%04x", prefix, (slot<<3)|fn), nil
-	case "platform", "acpi", "of_node":
+		return fmt.Sprintf("-pci-%04x", addr), true
+	case "acpi":
+		// ACPI is its own bus type to libsensors, with a single address: an
+		// ACPI namespace path is not something it can fold into a number.
+		return "-acpi-0", true
+	case "platform", "of_node":
 		// Platform devices are named "<driver>.<id>" and libsensors treats
 		// them as ISA with the id as the address, so the two coretemp
 		// devices of a dual-socket node are "coretemp-isa-0000" and
@@ -217,9 +252,9 @@ func chipName(dir string) (string, error) {
 				addr = int(v)
 			}
 		}
-		return fmt.Sprintf("%s-isa-%04x", prefix, addr), nil
+		return fmt.Sprintf("-isa-%04x", addr), true
 	}
-	return prefix + "-virtual-0", nil
+	return "", false
 }
 
 // splitPair parses "<a><sep><b>" where sep is "-" or "." in the given bases.
@@ -239,11 +274,22 @@ func splitPair(s string, baseA, baseB int) (int64, int64, bool) {
 	return a, b, true
 }
 
-// pciSlotFunc pulls slot and function out of a "domain:bus:slot.func" name.
-func pciSlotFunc(name string) (int64, int64, bool) {
-	i := strings.LastIndex(name, ":")
-	if i < 0 {
-		return 0, 0, false
+// pciAddress folds a "domain:bus:slot.func" device name into the address
+// libsensors prints: (bus << 8) | (slot << 3) | func, all hex. The domain is
+// not part of it, so k10temp at 0000:00:18.3 is 0x00c3 and a NIC at
+// 0000:83:00.1 is 0x8301.
+func pciAddress(name string) (int64, bool) {
+	parts := strings.Split(name, ":")
+	if len(parts) < 2 {
+		return 0, false
 	}
-	return splitPair(name[i+1:], 16, 16)
+	bus, err := strconv.ParseInt(parts[len(parts)-2], 16, 32)
+	if err != nil {
+		return 0, false
+	}
+	slot, fn, ok := splitPair(parts[len(parts)-1], 16, 16)
+	if !ok {
+		return 0, false
+	}
+	return (bus << 8) | (slot << 3) | fn, true
 }

@@ -38,6 +38,16 @@ history rather than as a diff against a public release.
   indefinitely without tripping, with nothing in the log and `--list`
   and `--check` both looking healthy. Selection is now keyed on the
   hwmon device.
+- Composed chip names did not match the ones `sensors` prints, which the
+  board table's `chip` key is documented to take. The PCI address left
+  out the bus, so every device outside bus 0 was named as though it were
+  on it (`amdgpu-pci-0000` for `0000:04:00.0`, where `sensors` says
+  `amdgpu-pci-0400`), and only the first `device` link was followed, so a
+  driver registering its hwmon device below a class device — `nvme`, an
+  ACPI thermal zone — fell back to `<driver>-virtual-0`. Both made
+  distinct devices compose one name, which is how the selection defect
+  above became reachable. ACPI devices are also spelled `-acpi-0` now
+  rather than `-isa-0000`.
 
 ## [0.10.0] - 2026-09-12
 

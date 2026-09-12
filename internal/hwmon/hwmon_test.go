@@ -19,6 +19,13 @@ type chip struct {
 	// subsystem is the bus the parent device sits on, or "" for a device
 	// registered without one.
 	subsystem string
+	// linked, when set, is a further device that dev's own "device" symlink
+	// points at. It models the class device a driver can interpose between
+	// its hwmon device and the bus device that names it: an nvme controller,
+	// a wireless PHY, an ACPI thermal zone.
+	linked string
+	// linkedSubsystem is the bus that further device sits on.
+	linkedSubsystem string
 	// name is the driver's hwmon "name" attribute.
 	name string
 	// temps maps an attribute index to its label and millidegree reading. A
@@ -67,6 +74,16 @@ func build(t *testing.T, chips ...chip) string {
 			mkdir(t, busDir)
 			symlink(t, busDir, filepath.Join(devDir, "subsystem"))
 		}
+		if c.linked != "" {
+			linkedDir := filepath.Join(root, "devices", filepath.FromSlash(c.linked))
+			mkdir(t, linkedDir)
+			symlink(t, linkedDir, filepath.Join(devDir, "device"))
+			if c.linkedSubsystem != "" {
+				busDir := filepath.Join(root, "bus", c.linkedSubsystem)
+				mkdir(t, busDir)
+				symlink(t, busDir, filepath.Join(linkedDir, "subsystem"))
+			}
+		}
 		symlink(t, hwmonDir, filepath.Join(classDir, hwmonName))
 	}
 	return classDir
@@ -96,14 +113,17 @@ func symlink(t *testing.T, target, link string) {
 // TestChipNames pins the composed chip names to what lm_sensors prints for
 // the same hardware. The expectations for k10temp, coretemp and spd5118 are
 // the names the deployed board table already uses, so a regression here would
-// silently stop matching a node's configured sensor.
+// silently stop matching a node's configured sensor. The amdgpu, acpitz and
+// nvme rows were taken from `sensors` on a live machine exposing all three.
 func TestChipNames(t *testing.T) {
 	tests := []struct {
-		desc      string
-		dev       string
-		subsystem string
-		name      string
-		want      string
+		desc            string
+		dev             string
+		subsystem       string
+		linked          string
+		linkedSubsystem string
+		name            string
+		want            string
 	}{
 		{
 			desc:      "AMD Zen CPU temperature, PCI function 00:18.3",
@@ -141,18 +161,48 @@ func TestChipNames(t *testing.T) {
 			want:      "spd5118-i2c-20-50",
 		},
 		{
+			// The bus number is part of the folded address, so two cards of
+			// the same model on different buses do not compose one name.
 			desc:      "NIC temperature, PCI function 83:00.1",
 			dev:       "pci0000:80/0000:83:00.1",
 			subsystem: "pci",
 			name:      "i350bb",
-			want:      "i350bb-pci-0001",
+			want:      "i350bb-pci-8301",
 		},
 		{
-			desc:      "ACPI thermal zone counts as ISA",
+			desc:      "GPU temperature on a non-zero PCI bus, 04:00.0",
+			dev:       "pci0000:00/0000:00:08.1/0000:04:00.0",
+			subsystem: "pci",
+			name:      "amdgpu",
+			want:      "amdgpu-pci-0400",
+		},
+		{
+			desc:      "ACPI devices have their own bus type",
 			dev:       "LNXSYSTM:00/LNXTHERM:00",
 			subsystem: "acpi",
 			name:      "acpitz",
-			want:      "acpitz-isa-0000",
+			want:      "acpitz-acpi-0",
+		},
+		{
+			// The hwmon device hangs off the thermal zone, whose subsystem is
+			// a class rather than a bus; the ACPI device is one link further
+			// up.
+			desc:            "ACPI thermal zone reached through the thermal class",
+			dev:             "virtual/thermal/thermal_zone0",
+			subsystem:       "thermal",
+			linked:          "LNXSYSTM:00/LNXSYBUS:01/LNXTHERM:00",
+			linkedSubsystem: "acpi",
+			name:            "acpitz",
+			want:            "acpitz-acpi-0",
+		},
+		{
+			desc:            "NVMe temperature reached through the nvme class",
+			dev:             "pci0000:00/0000:00:02.4/0000:03:00.0/nvme/nvme0",
+			subsystem:       "nvme",
+			linked:          "pci0000:00/0000:00:02.4/0000:03:00.0",
+			linkedSubsystem: "pci",
+			name:            "nvme",
+			want:            "nvme-pci-0300",
 		},
 		{
 			desc:      "device without a subsystem is virtual",
@@ -166,10 +216,12 @@ func TestChipNames(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
 			dir := build(t, chip{
-				dev:       tc.dev,
-				subsystem: tc.subsystem,
-				name:      tc.name,
-				temps:     map[int]temp{1: {reading: "45000"}},
+				dev:             tc.dev,
+				subsystem:       tc.subsystem,
+				linked:          tc.linked,
+				linkedSubsystem: tc.linkedSubsystem,
+				name:            tc.name,
+				temps:           map[int]temp{1: {reading: "45000"}},
 			})
 			sensors, err := Discover(dir)
 			if err != nil {

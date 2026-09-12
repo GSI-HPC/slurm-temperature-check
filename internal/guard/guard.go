@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -248,6 +249,17 @@ func exists(path string) bool {
 	return err == nil
 }
 
+// Bounds on a reading from the override file, in degrees Celsius. They are
+// deliberately far wider than any sensor a mainboard carries, because their
+// job is to reject values that are not temperatures at all rather than to
+// second-guess the operator: absolute zero below, and above it enough room
+// for the documented drill value of 999 and any other deliberately absurd
+// figure someone picks to prove the mechanism fires.
+const (
+	minReadingCelsius = -273.15
+	maxReadingCelsius = 10000
+)
+
 // fileSource reads a temperature in degrees Celsius from a file. It backs the
 // override file, whose contents an operator writes with a shell redirect.
 type fileSource struct {
@@ -269,7 +281,18 @@ func (f *fileSource) Read() (hwmon.MilliCelsius, error) {
 		// bad reading and covered by the same retry budget.
 		return 0, fmt.Errorf("read %s: %q is not a temperature in degrees Celsius", f.path, s)
 	}
-	return hwmon.MilliCelsius(v * 1000), nil
+	// ParseFloat accepts "nan" and "inf", and converting a float outside
+	// int64's range to it is implementation-defined -- on amd64 it yields the
+	// most negative int64, about -9.2e15 degrees, which compares as safely
+	// below every limit. Unchecked, that is a way for the override file to
+	// report a safe temperature on a node that is over its limit, which is
+	// the one direction this program must never fail in. Anything that is not
+	// a temperature is rejected here and spends the retry budget like any
+	// other bad reading, so the node stops rather than keeps running.
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < minReadingCelsius || v > maxReadingCelsius {
+		return 0, fmt.Errorf("read %s: %q is not a temperature in degrees Celsius", f.path, s)
+	}
+	return hwmon.MilliCelsius(math.Round(v * 1000)), nil
 }
 
 // Sensors adapts a set of hwmon sensors to Source, reporting the hottest of

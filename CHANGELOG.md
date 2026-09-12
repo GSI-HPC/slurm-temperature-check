@@ -56,6 +56,16 @@ history rather than as a diff against a public release.
   reporting `ok` off the other one, and `--check` agreed. All four now
   use the driver prefix, which watches every socket and compares the
   hottest of them.
+- The override file failed open on a value that is not a temperature.
+  `strconv.ParseFloat` accepts `nan` and `inf`, and converting an
+  out-of-range float to `int64` is implementation-defined — on x86-64
+  every such value becomes the most negative `int64`, about
+  -9.2e15 °C, which compares below any limit. So `echo nan >` the
+  override file, or enough nines to overflow, made a node that was over
+  its limit report `ok` and exit 0. Values that are not temperatures are
+  now rejected, which spends the retry budget and then trips, as the
+  specification's "not a number" rows require. The conversion to
+  millidegrees also rounds rather than truncates.
 
 ## [0.10.0] - 2026-09-12
 

@@ -453,3 +453,83 @@ func TestUnreadableOverrideStillCountsAsPresent(t *testing.T) {
 		t.Errorf("source = %q, want the override file: the hardware must not have been consulted", res.Source)
 	}
 }
+
+// TestOverrideRejectsValuesThatAreNotTemperatures closes the one way this
+// program could fail open. strconv.ParseFloat accepts "nan" and "inf", and
+// converting an out-of-range float to int64 is implementation-defined: on
+// amd64 every one of them lands on the most negative int64, which reads as
+// about -9.2e15 degrees and so compares below any limit. A hot node whose
+// override file held one of these values reported "ok" and exit 0.
+//
+// The values have to be rejected rather than clamped, because a rejected
+// reading spends the retry budget and then trips, which is what the
+// specification's "not a number" rows promise.
+func TestOverrideRejectsValuesThatAreNotTemperatures(t *testing.T) {
+	for _, content := range []string{
+		"nan", "NaN", "inf", "-inf", "Inf", "+Inf",
+		// Beyond int64 millidegrees in plain decimal, which is reachable by
+		// an operator typing enough nines to be certain the guard trips.
+		"1e20", "9999999999999999", "-1e20",
+		// Outside the plausible bounds without overflowing.
+		"-300", "100000",
+	} {
+		t.Run(content, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "override")
+			if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			g := &Guard{
+				Max:          hwmon.MilliCelsius(85000),
+				Sensors:      &fakeSource{reading: 99000},
+				OverridePath: path,
+				ReadRetries:  0,
+				Log:          quietLogger(),
+			}
+			res := g.Check()
+			if res.Verdict != Trip {
+				t.Fatalf("override %q: verdict = %s, want %s (reading %s)",
+					content, res.Verdict, Trip, res.Reading)
+			}
+			if res.HasReading {
+				t.Errorf("override %q: reported a reading of %s, want none", content, res.Reading)
+			}
+		})
+	}
+}
+
+// TestOverrideAcceptsRealTemperatures is the other half: the values an
+// operator actually writes have to keep working, including the drill value
+// the README documents and a fractional one.
+func TestOverrideAcceptsRealTemperatures(t *testing.T) {
+	for _, tc := range []struct {
+		content string
+		want    hwmon.MilliCelsius
+		verdict Verdict
+	}{
+		{"25", 25000, OK},
+		{"85", 85000, OK},
+		{"85.001", 85001, Trip},
+		{"999", 999000, Trip},
+		{"-5.5", -5500, OK},
+	} {
+		t.Run(tc.content, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "override")
+			if err := os.WriteFile(path, []byte(tc.content+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			g := &Guard{
+				Max:          hwmon.MilliCelsius(85000),
+				Sensors:      &fakeSource{reading: 42000},
+				OverridePath: path,
+				Log:          quietLogger(),
+			}
+			res := g.Check()
+			if res.Reading != tc.want {
+				t.Errorf("override %q: reading = %s, want %s", tc.content, res.Reading, tc.want)
+			}
+			if res.Verdict != tc.verdict {
+				t.Errorf("override %q: verdict = %s, want %s", tc.content, res.Verdict, tc.verdict)
+			}
+		})
+	}
+}

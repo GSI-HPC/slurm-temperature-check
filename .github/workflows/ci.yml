@@ -59,19 +59,38 @@ jobs:
         run: shellcheck scripts/*.sh .githooks/commit-msg
       - name: sysusers file
         run: |
-          systemd-sysusers --dry-run \
-            "$PWD"/packaging/systemd/slurm-temperature-check.sysusers
+          set -euo pipefail
+          sysusers="$PWD/packaging/systemd/slurm-temperature-check.sysusers"
+          systemd-sysusers --dry-run "$sysusers"
+          # Actually create the user, and put a stand-in at the unit's
+          # ExecStart path. systemd-analyze verify resolves User= and checks
+          # that the executable exists, and reports both as errors when they
+          # are missing, which on a bare runner they are.
+          sudo systemd-sysusers "$sysusers"
+          getent passwd slurm-temp-check
+          sudo install -m 0755 /usr/bin/true /usr/bin/slurm-temperature-check
       - name: Units and the slurmd drop-in
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd packaging/systemd
-          # verify only warns about unknown directives, so its output is
-          # checked too.
+          # verify only warns about unknown directives and exits 0 for them,
+          # so the output is inspected as well as the status. Capturing it
+          # must not abort the step: a non-zero status is a finding to report,
+          # not a reason to hide the output that explains it.
+          rc=0
           out="$(systemd-analyze verify --man=no \
             slurm-temperature-check.service \
-            slurm-temperature-check-emergency-stop.service 2>&1)"
+            slurm-temperature-check-emergency-stop.service 2>&1)" || rc=$?
           printf '%s\n' "$out"
-          if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+          if grep -q 'Unknown key' <<<"$out"; then
+            echo "::error::a shipped unit carries a directive this systemd does not know"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::systemd-analyze verify exited $rc; see its output above"
+            exit 1
+          fi
+          set -e
           # The drop-in against a stand-in for the SchedMD slurmd unit. At
           # debug level verify dumps the loaded unit, which shows whether the
           # drop-in was picked up and parsed.
@@ -84,8 +103,11 @@ jobs:
           EOF
           cp -r slurmd.service.d "$tmp/"
           out="$(cd "$tmp" && SYSTEMD_LOG_LEVEL=debug \
-            systemd-analyze verify --man=no slurmd.service 2>&1)"
-          if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+            systemd-analyze verify --man=no slurmd.service 2>&1)" || true
+          if grep -q 'Unknown key' <<<"$out"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           grep -q 'DropIn Path: .*/slurmd.service.d/temperature-check.conf' <<<"$out"
           grep -q 'slurm-temperature-check.service' <<<"$out"
       - name: Guard hardening score

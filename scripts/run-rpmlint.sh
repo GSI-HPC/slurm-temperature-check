@@ -31,7 +31,17 @@ set -euo pipefail
 # - position-independent-executable-suggested: %gobuild builds with
 #   -buildmode=pie on the architectures that support it; the finding fires
 #   on EL9's rpmlint regardless.
-allow='spelling-error|invalid-license|no-buildroot-tag|invalid-url Source0|only-non-binary-in-usr-lib|unstripped-binary-or-object|statically-linked-binary|no-manual-page-for-binary|position-independent-executable-suggested'
+# - no-signature: rpmbuild does not sign what it produces. Release artifacts
+#   are published with SHA256SUMS by the release workflow instead.
+# - no-packager-tag: the Fedora/EL guidelines reserve `Packager:` for the
+#   build system; a spec that sets it is the error, not one that does not.
+# - no-group-tag: `Group:` has been dropped from the guidelines and is
+#   ignored by rpm.
+#
+# The last three do not appear under the rpmlint configuration shipped in the
+# CI containers, only when the script is run against a bare configuration on a
+# maintainer's own machine; they are justified here so that run is clean too.
+allow='spelling-error|invalid-license|no-buildroot-tag|invalid-url Source0|only-non-binary-in-usr-lib|unstripped-binary-or-object|statically-linked-binary|no-manual-page-for-binary|position-independent-executable-suggested|no-signature|no-packager-tag|no-group-tag'
 
 # One rpmlint run per file. rpmlint's spec checker keeps its section state
 # across the files of a single run, so checking the spec file and then the

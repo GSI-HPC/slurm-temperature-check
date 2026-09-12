@@ -26,6 +26,14 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+### Changed
+
+- A GitHub release is titled with its version number alone, `0.11.1`,
+  rather than `slurm-temperature-check v0.11.1`. The page names the
+  repository above the title and the tag beside it either way, so the
+  part that distinguished one release from another came last. The
+  existing releases were renamed to match.
+
 ## [0.11.1] - 2026-09-12
 
 Two of these are cases where the guard kept a node in service while its

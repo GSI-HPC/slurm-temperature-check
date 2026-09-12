@@ -75,8 +75,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Titled with the version number alone. The release page already
+          # carries the repository name above the title and the tag beside
+          # it, so spelling both again pushed the one part that tells two
+          # releases apart to the end of the line.
           gh release create "${GITHUB_REF_NAME}" \
             --verify-tag \
-            --title "slurm-temperature-check ${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME#v}" \
             --notes-file notes.md \
             dist/*

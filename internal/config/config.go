@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -192,9 +193,14 @@ func parseThreshold(s string) (hwmon.MilliCelsius, error) {
 	if err != nil {
 		return 0, fmt.Errorf("max_celsius %q is not a number", s)
 	}
-	if v < minThresholdCelsius || v > maxThresholdCelsius {
+	// NaN has to be rejected explicitly: every comparison against it is
+	// false, so a range test written as "below the minimum or above the
+	// maximum" lets it through. It would then convert to the most negative
+	// int64, giving a limit of about -9.2e15 C that every real reading
+	// exceeds, so the node would trip on its first pass.
+	if math.IsNaN(v) || v < minThresholdCelsius || v > maxThresholdCelsius {
 		return 0, fmt.Errorf("max_celsius %s is outside the plausible range %d..%d",
 			s, minThresholdCelsius, maxThresholdCelsius)
 	}
-	return hwmon.MilliCelsius(v * 1000), nil
+	return hwmon.MilliCelsius(math.Round(v * 1000)), nil
 }

@@ -66,6 +66,13 @@ history rather than as a diff against a public release.
   now rejected, which spends the retry budget and then trips, as the
   specification's "not a number" rows require. The conversion to
   millidegrees also rounds rather than truncates.
+- `max_celsius = nan` passed the 20–150 °C range check, because every
+  comparison against NaN is false and the check asked whether the value
+  was below the minimum or above the maximum. The limit then became
+  about -9.2e15 °C, which every reading exceeds, so the node tripped on
+  its first pass and the emergency stop killed its jobs. NaN is now
+  rejected, and this threshold rounds to millidegrees rather than
+  truncating as well.
 
 ## [0.10.0] - 2026-09-12
 

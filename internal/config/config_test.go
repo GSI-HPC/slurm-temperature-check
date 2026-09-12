@@ -183,7 +183,12 @@ func TestParsedThresholdBounds(t *testing.T) {
 			t.Errorf("max_celsius = %s rejected: %v", v, err)
 		}
 	}
-	for _, v := range []string{"19.9", "150.1", "-40", "0"} {
+	// nan is in this list because every comparison against it is false: a
+	// range test written as "below the minimum or above the maximum" accepts
+	// it, and it then converts to a limit of about -9.2e15 C, which every
+	// real reading exceeds. A table with one such entry drains the node on
+	// its first pass.
+	for _, v := range []string{"19.9", "150.1", "-40", "0", "nan", "NaN", "inf", "-inf"} {
 		if _, err := Parse(strings.NewReader("[B]\nchip = c\nmax_celsius = " + v + "\n")); err == nil {
 			t.Errorf("max_celsius = %s accepted, want it rejected", v)
 		}

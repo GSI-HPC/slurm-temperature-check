@@ -528,3 +528,31 @@ func TestUnreadableSensorIsToleratedNotFatal(t *testing.T) {
 		t.Errorf("stderr %q refuses to start, want the reading tolerated first", stderr)
 	}
 }
+
+// TestWatchdogObserverIsAlwaysCallable pins the contract the check loop
+// relies on: it calls what watchdog returns after every pass, so a nil there
+// would panic on any node whose unit sets no WatchdogSec=.
+func TestWatchdogObserverIsAlwaysCallable(t *testing.T) {
+	for _, tc := range []struct {
+		desc string
+		usec string
+	}{
+		{desc: "no WatchdogSec in the unit", usec: ""},
+		{desc: "WatchdogSec set", usec: "60000000"},
+		{desc: "a WATCHDOG_USEC that is not a number", usec: "soon"},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			t.Setenv("WATCHDOG_USEC", tc.usec)
+			t.Setenv("WATCHDOG_PID", "")
+
+			pass := watchdog(ctx, nil, 10*time.Second, quietLogger())
+			if pass == nil {
+				t.Fatal("watchdog returned nil, which the loop calls after every pass")
+			}
+			pass()
+			pass()
+		})
+	}
+}

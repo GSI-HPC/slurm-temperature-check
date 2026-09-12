@@ -112,6 +112,14 @@ history rather than as a diff against a public release.
   fired the emergency stop, where the same error one interval later
   would have been tolerated twice. Arming no longer reads: the chip and
   attribute are still resolved, and the loop decides.
+- The watchdog measured how long ago the check loop last completed a
+  pass against the wall clock, which a `time.Time` rebuilt from a
+  Unix timestamp follows because it carries no monotonic reading. A
+  forward `CLOCK_REALTIME` step larger than the staleness window —
+  chrony's `makestep` on a node whose RTC battery is dead, while the
+  node is coming up — therefore withheld a keep-alive from a loop that
+  was turning normally, and a backward step kept feeding the watchdog
+  for a loop that had wedged. Progress is now a monotonic duration.
 
 ## [0.10.0] - 2026-09-12
 

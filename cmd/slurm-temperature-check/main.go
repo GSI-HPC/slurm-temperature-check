@@ -331,8 +331,16 @@ func watchdog(ctx context.Context, notify *sdnotify.Notifier, interval time.Dura
 		return func() {}
 	}
 
+	// Progress is recorded as a monotonic duration since the watchdog was
+	// wired up, not as a wall-clock instant. A time.Time rebuilt with
+	// time.Unix() carries no monotonic reading, so staleness measured against
+	// it follows CLOCK_REALTIME: a forward step larger than the window --
+	// chrony's makestep on a node whose RTC battery is dead, which happens
+	// while the node is coming up -- withholds a keep-alive from a loop that
+	// is turning perfectly well, and a backward step goes on feeding the
+	// watchdog for a loop that has wedged.
+	started := time.Now()
 	var lastPass atomic.Int64
-	lastPass.Store(time.Now().UnixNano())
 
 	// A pass is overdue once two intervals have gone by without one.
 	stale := 2 * interval
@@ -349,7 +357,7 @@ func watchdog(ctx context.Context, notify *sdnotify.Notifier, interval time.Dura
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				since := time.Since(time.Unix(0, lastPass.Load()))
+				since := time.Since(started) - time.Duration(lastPass.Load())
 				if since > stale {
 					log.Error("the check loop has not completed a pass, withholding the watchdog keep-alive",
 						"since_last_pass", since.String())
@@ -360,7 +368,7 @@ func watchdog(ctx context.Context, notify *sdnotify.Notifier, interval time.Dura
 		}
 	}()
 
-	return func() { lastPass.Store(time.Now().UnixNano()) }
+	return func() { lastPass.Store(int64(time.Since(started))) }
 }
 
 func printSensors(w io.Writer, sensors []hwmon.Sensor) {

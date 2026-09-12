@@ -6,6 +6,7 @@
 #   OPTIONS="--interval=5s --read-retries=0"
 #   OPTIONS="--log.level=debug --log.format=json"
 #
-# Raising --interval above 30s needs WatchdogSec= in the unit raised with it;
-# see the comment there.
+# --interval needs no matching change to WatchdogSec= in the unit: the
+# staleness window the guard applies already follows the interval. Raising
+# WatchdogSec= only makes a wedged loop take longer to notice.
 OPTIONS=""

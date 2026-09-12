@@ -120,6 +120,16 @@ history rather than as a diff against a public release.
   node is coming up — therefore withheld a keep-alive from a loop that
   was turning normally, and a backward step kept feeding the watchdog
   for a loop that had wedged. Progress is now a monotonic duration.
+- The watchdog was documented as withholding the keep-alive after two
+  `--interval`s; the window is the longer of two intervals and
+  `WatchdogSec`, which is 60s and not 20s at the defaults, making wedge
+  to kill 60–120s rather than the 20–80s the README implied. The
+  keep-alive was also described as being sent from the check loop, where
+  it comes from a ticker gated on the loop's progress. Advice to raise
+  `WatchdogSec=` before raising `--interval`, in the unit, the sysconfig
+  file and the README, was left over from that description and had it
+  backwards: the window already follows `--interval`, and raising
+  `WatchdogSec=` only slows detection down.
 
 ## [0.10.0] - 2026-09-12
 
@@ -149,10 +159,11 @@ new binary and has to be rewritten as a board table. Read
   22.05+ and the older one) and then stops `slurmd`. Its commands are
   fixed in the unit file and take no input from the configuration or the
   sensors.
-- `WatchdogSec=60` with the keep-alive sent from the check loop, so a loop
-  that stops turning is killed by systemd and lands in the failed state
-  that arms the emergency stop. This is what replaces the previous
-  design's staleness check on the file between the two processes.
+- `WatchdogSec=60` with the keep-alive gated on the check loop's
+  progress, so a loop that stops turning is killed by systemd and lands
+  in the failed state that arms the emergency stop. This is what replaces
+  the previous design's staleness check on the file between the two
+  processes.
 - `--list`, which prints the node's chips, sensors, labels and live
   readings as the program computes them, and `--check`, which resolves the
   board table against the node and takes one reading without starting the

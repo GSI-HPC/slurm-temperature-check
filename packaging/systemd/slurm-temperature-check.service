@@ -35,9 +35,13 @@ RuntimeDirectoryPreserve=yes
 
 # A loop that stops turning is the failure this design has to catch, because
 # nothing else would notice. systemd kills the service when the keep-alive
-# stops, the unit lands in failed, and the emergency stop runs. The value must
-# stay comfortably above twice --interval (10s by default); raise it before
-# raising the interval.
+# stops, the unit lands in failed, and the emergency stop runs.
+#
+# The guard pings every WatchdogSec/2 and withholds the ping once no pass has
+# completed for whichever is longer of twice --interval and WatchdogSec, so a
+# wedged loop is killed between one and two WatchdogSec after it stopped
+# turning. Raising --interval needs no change here: the window follows it.
+# Raising this value only makes detection slower.
 WatchdogSec=60
 
 # Stopping is a clean stop: SIGTERM, exit 0, no emergency stop.

@@ -150,10 +150,15 @@ slurmd` or reboot. `After=` alone orders the two whenever both are
 started, which is all this drop-in is for.
 
 A loop that stops turning is the one failure nothing else would notice,
-so the unit sets `WatchdogSec=60` and the guard sends its keep-alive from
-the check loop rather than from a timer of its own. A wedged loop stops
-the keep-alive, systemd kills the service, the unit lands in failed, and
-the emergency stop runs — the same path as any other failure.
+so the unit sets `WatchdogSec=60` and the guard's keep-alive is gated on
+the loop's progress rather than sent unconditionally. A ticker pings
+systemd every `WatchdogSec`/2, but only while the check loop has
+completed a pass recently — "recently" being whichever is longer of two
+`--interval`s and `WatchdogSec`, 60s at the defaults. A wedged loop stops
+the keep-alive, systemd kills the service one `WatchdogSec` later, the
+unit lands in failed, and the emergency stop runs — the same path as any
+other failure. Wedge to kill is therefore between one and two
+`WatchdogSec`, about 60 to 120 seconds as shipped.
 
 ### Expected behaviour
 
@@ -242,8 +247,11 @@ Flags go in `OPTIONS=` in `/etc/sysconfig/slurm-temperature-check`:
 | `--check` | | Resolve the table against this node, take one reading, exit |
 | `--version` | | Print the version and exit |
 
-Raising `--interval` above 30s needs `WatchdogSec=` in the unit raised
-with it; use `systemctl edit slurm-temperature-check.service`.
+Raising `--interval` needs no matching change to `WatchdogSec=`: the
+staleness window the guard applies is already the longer of two intervals
+and `WatchdogSec`. Raising `WatchdogSec=` with `systemctl edit
+slurm-temperature-check.service` only makes a wedged loop take longer to
+notice.
 
 ### Suspending the guard
 
@@ -342,7 +350,7 @@ touched.
 | `no hwmon chip matches "k10temp-pci-00c3"` | The chip moved to a different PCI function or i2c bus, usually after a firmware or kernel change | `slurm-temperature-check --list`; either pin the new full name or use the bare driver prefix (`k10temp`), which matches whatever address it lands on |
 | `chip "..." has no sensor "Tdie"` | The driver renamed or dropped the label | The message lists the chip's available attributes and labels; `sensors` shows the same names |
 | The node stops with `... is not an integer` or `read ...: input/output error` | A sensor that has genuinely gone away, or a bus that is wedged | `journalctl -u slurm-temperature-check`; the warnings before the stop show how many readings failed first. `--read-retries` raises the tolerance, but a sensor that never comes back should be replaced in the table, not tolerated |
-| The unit is killed with `Watchdog timeout` | The check loop stopped making progress | `journalctl -u slurm-temperature-check`; a keep-alive is withheld only when no pass has completed for two intervals, and the guard logs that before systemd acts |
+| The unit is killed with `Watchdog timeout` | The check loop stopped making progress | `journalctl -u slurm-temperature-check`; a keep-alive is withheld only once no pass has completed for the longer of two `--interval`s and `WatchdogSec` (60s as shipped), and the guard logs that before systemd acts |
 | `systemctl stop slurmd` also kills the guard, or vice versa | A leftover `BindsTo=` from an earlier setup | `systemctl cat slurmd.service` — the drop-in this package installs carries `After=` only; remove any local override that adds `BindsTo=` or `Wants=` |
 | Jobs survived a trip | `slurmstepd.scope` does not exist and the steps are not in `slurmd`'s cgroup either | `systemd-cgls -u slurmd.service` and `systemctl status slurmstepd.scope` while a job runs, to see where the steps actually land; `journalctl -u slurm-temperature-check-emergency-stop` shows what the three commands reported |
 | `slurmd` came back by itself after a trip | `Restart=` on `slurmd.service`, winning a race against the final `stop` | `systemctl show -p Restart slurmd.service`; the node is drained by `slurmctld` regardless, but consider removing `Restart=` |

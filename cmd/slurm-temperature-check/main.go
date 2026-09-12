@@ -268,7 +268,7 @@ func printSensors(w io.Writer, sensors []hwmon.Sensor) {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Chip, s.Attr, label, reading)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {

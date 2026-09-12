@@ -283,6 +283,7 @@ type Sensors []hwmon.Sensor
 // NewSensors adapts sensors to Source.
 func NewSensors(sensors []hwmon.Sensor) Sensors { return Sensors(sensors) }
 
+// Name lists the sensors being watched, joined with "+".
 func (s Sensors) Name() string {
 	names := make([]string, 0, len(s))
 	for _, sensor := range s {
@@ -291,6 +292,8 @@ func (s Sensors) Name() string {
 	return strings.Join(names, "+")
 }
 
+// Read returns the hottest of the sensors, or an error if any one of them
+// cannot be read.
 func (s Sensors) Read() (hwmon.MilliCelsius, error) {
 	if len(s) == 0 {
 		return 0, errors.New("no sensors selected")

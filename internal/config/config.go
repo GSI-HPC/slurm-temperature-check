@@ -85,7 +85,8 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open board table: %w", err)
 	}
-	defer f.Close()
+	// The file is only read, so a close error says nothing useful.
+	defer func() { _ = f.Close() }()
 
 	cfg, err := Parse(f)
 	if err != nil {

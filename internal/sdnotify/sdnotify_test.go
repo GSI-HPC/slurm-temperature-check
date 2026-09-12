@@ -77,7 +77,7 @@ func TestNotifierSends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	t.Setenv("NOTIFY_SOCKET", path)
 	n := New()
@@ -125,7 +125,7 @@ func TestNotifierSurvivesAClosedSocket(t *testing.T) {
 	if n == nil {
 		t.Fatal("New() = nil, want a notifier")
 	}
-	conn.Close()
+	_ = conn.Close()
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}

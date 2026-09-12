@@ -16,6 +16,14 @@ linters:
     - usetesting
 
   settings:
+    errcheck:
+      # Writing the program's own output to stdout or stderr: if that write
+      # fails there is nowhere left to report it, and the exit status already
+      # carries the verdict. Every other unchecked return stays an error.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+
     revive:
       rules:
         # Every exported identifier in this tree is documented; keep it that

@@ -85,6 +85,16 @@ history rather than as a diff against a public release.
   suppression compares, taking an override into use is logged at
   `warn`, `--check` prints a `source` line, and the status line follows
   the loop.
+- The `slurmd` drop-in carried `Wants=slurm-temperature-check.service`,
+  which starts the guard whenever `slurmd` starts, whether or not the
+  guard was ever enabled — an `[Install]` section has no say over a
+  dependency another unit declares. On a node where the package was
+  installed but the board was not in the table yet, which
+  [Install](README.md#install) asks for explicitly, any `systemctl
+  restart slurmd` or reboot therefore started a guard that exited 2,
+  failed, and fired `OnFailure=`, killing every job step on a node
+  nobody had enrolled. The drop-in now carries `After=` only, which is
+  the ordering it always documented.
 
 ## [0.10.0] - 2026-09-12
 

@@ -132,7 +132,6 @@ else:
 
 ```ini
 [Unit]
-Wants=slurm-temperature-check.service
 After=slurm-temperature-check.service
 ```
 
@@ -141,6 +140,14 @@ guard means every stop of the guard takes the jobs with it, including the
 stops that happen during a package upgrade or while an operator is
 servicing a sensor. The coupling that matters runs the other way and only
 on failure.
+
+It is deliberately not `Wants=` either. A `Wants=` here would *start* the
+guard whenever `slurmd` starts, whether or not the guard was ever
+enabled — an `[Install]` section has no say over a dependency another
+unit declares — so a node with the package installed but its board not
+yet in the table would kill its own jobs on the next `systemctl restart
+slurmd` or reboot. `After=` alone orders the two whenever both are
+started, which is all this drop-in is for.
 
 A loop that stops turning is the one failure nothing else would notice,
 so the unit sets `WatchdogSec=60` and the guard sends its keep-alive from
@@ -325,7 +332,7 @@ touched.
 | `chip "..." has no sensor "Tdie"` | The driver renamed or dropped the label | The message lists the chip's available attributes and labels; `sensors` shows the same names |
 | The node stops with `... is not an integer` or `read ...: input/output error` | A sensor that has genuinely gone away, or a bus that is wedged | `journalctl -u slurm-temperature-check`; the warnings before the stop show how many readings failed first. `--read-retries` raises the tolerance, but a sensor that never comes back should be replaced in the table, not tolerated |
 | The unit is killed with `Watchdog timeout` | The check loop stopped making progress | `journalctl -u slurm-temperature-check`; a keep-alive is withheld only when no pass has completed for two intervals, and the guard logs that before systemd acts |
-| `systemctl stop slurmd` also kills the guard, or vice versa | A leftover `BindsTo=` from an earlier setup | `systemctl cat slurmd.service` — the drop-in this package installs carries `Wants=`/`After=` only; remove any local override that adds `BindsTo=` |
+| `systemctl stop slurmd` also kills the guard, or vice versa | A leftover `BindsTo=` from an earlier setup | `systemctl cat slurmd.service` — the drop-in this package installs carries `After=` only; remove any local override that adds `BindsTo=` or `Wants=` |
 | Jobs survived a trip | `slurmstepd.scope` does not exist and the steps are not in `slurmd`'s cgroup either | `systemd-cgls -u slurmd.service` and `systemctl status slurmstepd.scope` while a job runs, to see where the steps actually land; `journalctl -u slurm-temperature-check-emergency-stop` shows what the three commands reported |
 | `slurmd` came back by itself after a trip | `Restart=` on `slurmd.service`, winning a race against the final `stop` | `systemctl show -p Restart slurmd.service`; the node is drained by `slurmctld` regardless, but consider removing `Restart=` |
 | Nothing happens on a node that should be guarded | The unit is not enabled, or the disable file is there | `systemctl is-enabled slurm-temperature-check`; `ls /etc/slurm-temperature-check/disable` |

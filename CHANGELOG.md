@@ -51,6 +51,13 @@ history rather than as a diff against a public release.
   reporting `ok`. Each reading is now confirmed against the chip name
   the sensor was selected as, and a mismatch is treated as an unreadable
   sensor: tolerated within the retry budget, then a trip.
+- `--help` reported failure. The flag package returns its help request as
+  a parse error, which fell into the branch that exits 2, so the usage
+  went to stderr and the documented way to discover the flags — the
+  sysconfig file points at it — came back empty from a pager or a grep
+  and aborted any wrapper run under `set -e`. It exits 0 and prints to
+  stdout now. A flag the program does not have is still a
+  misconfiguration and still exits 2.
 - The commit-message lint rejected any subject holding a capital letter
   anywhere in it. `subject-case: [2, always, lower-case]` is satisfied
   only when the subject equals its own lower-cased form, so no subject

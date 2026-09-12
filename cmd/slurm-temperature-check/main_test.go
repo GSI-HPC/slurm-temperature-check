@@ -109,6 +109,43 @@ func exec(t *testing.T, args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
+// TestHelp covers the one exit this program makes that is neither a stop nor
+// a refusal to start: being asked what its flags are. The sysconfig file
+// tells an operator to run it, so it goes to stdout and exits 0, where a
+// pager, a grep or a wrapper under `set -e` can use it.
+func TestHelp(t *testing.T) {
+	for _, arg := range []string{"-h", "--help"} {
+		t.Run(arg, func(t *testing.T) {
+			code, stdout, stderr := exec(t, arg)
+			if code != exitOK {
+				t.Errorf("exit = %d, want %d: a help request is not a failure", code, exitOK)
+			}
+			if !strings.Contains(stdout, "Usage:") || !strings.Contains(stdout, "-read-retries") {
+				t.Errorf("stdout = %q, want the usage and the flag list", stdout)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q, want nothing", stderr)
+			}
+		})
+	}
+}
+
+// TestUndefinedFlag is the other half of that split: a flag the program does
+// not have is a misconfiguration of the unit, it exits with exitConfig, and
+// OnFailure= is meant to see it.
+func TestUndefinedFlag(t *testing.T) {
+	code, stdout, stderr := exec(t, "--nonsense")
+	if code != exitConfig {
+		t.Errorf("exit = %d, want %d", code, exitConfig)
+	}
+	if !strings.Contains(stderr, "not defined") {
+		t.Errorf("stderr = %q, want it to name the flag it rejected", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+}
+
 func TestVersion(t *testing.T) {
 	code, stdout, _ := exec(t, "--version")
 	if code != exitOK {

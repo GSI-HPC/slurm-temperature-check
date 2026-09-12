@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -80,14 +81,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"resolve the configuration against this node, take one reading and exit")
 	fs.BoolVar(&o.showVersion, "version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: slurm-temperature-check [flags]\n\n"+
+		fmt.Fprintf(fs.Output(), "Usage: slurm-temperature-check [flags]\n\n"+
 			"Exits 0 when asked to stop, %d when the node must stop running jobs,\n"+
 			"%d when it cannot arm at all.\n\nFlags:\n", exitTripped, exitConfig)
 		fs.PrintDefaults()
 	}
+	// The flag package prints the usage itself both when it handles -h and
+	// when it rejects a flag, and only Parse's error says which happened. The
+	// two want different streams and different exit codes, so the FlagSet
+	// prints neither and this decides.
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Asking what the flags are is not a failure of the node's
+			// thermal guard. It goes to stdout so that it can be paged or
+			// grepped the way the sysconfig file tells an operator to, and
+			// exits 0 so that a wrapper run under `set -e` is not aborted by
+			// a successful help request.
+			fs.SetOutput(stdout)
+			fs.Usage()
+			return exitOK
+		}
+		fs.SetOutput(stderr)
+		fmt.Fprintln(stderr, err)
+		fs.Usage()
 		return exitConfig
 	}
+	fs.SetOutput(stderr)
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "unexpected argument %q\n", fs.Arg(0))
 		return exitConfig

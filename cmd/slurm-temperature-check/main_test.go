@@ -224,12 +224,6 @@ func TestCannotArm(t *testing.T) {
 			want: "has no sensor",
 		},
 		{
-			desc: "the sensor is present but unreadable",
-			node: node{board: "TESTBOARD", chip: "k10temp", label: "Tctl",
-				reading: "no number here", table: testTable},
-			want: "is not an integer",
-		},
-		{
 			desc:  "the board table does not exist",
 			node:  healthy(),
 			extra: []string{"--config=/nonexistent/boards.conf"},
@@ -505,4 +499,32 @@ func TestRearmWhenResumed(t *testing.T) {
 			t.Error("arming succeeded for a board that is still not in the table")
 		}
 	})
+}
+
+// TestUnreadableSensorIsToleratedNotFatal is rows 7 and 8. An attribute that
+// is present but cannot be read is a failed reading, absorbed by the retry
+// budget and fatal only once that is spent. It is not a reason to refuse to
+// start: rows 11 and 12 are about a chip or sensor that is not there at all,
+// which Select() already catches.
+//
+// Reading once while arming collapsed the two. It spends no retry budget, so
+// a single transient bus error on a node still coming up exited with
+// exitConfig and fired the emergency stop, where the same error one interval
+// later would have been tolerated twice over.
+func TestUnreadableSensorIsToleratedNotFatal(t *testing.T) {
+	n := node{board: "TESTBOARD", chip: "k10temp", label: "Tctl",
+		reading: "no number here", table: testTable}
+	code, stdout, stderr := exec(t, append(n.flags(t), "--check")...)
+
+	// --check still answers "no" -- it has no retry budget to spend -- but it
+	// answers it as a failed reading rather than as a broken configuration.
+	if code != exitTripped {
+		t.Fatalf("exit = %d, want %d (stdout %s stderr %s)", code, exitTripped, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "is not an integer") {
+		t.Errorf("stdout %q does not say why the reading failed", stdout)
+	}
+	if strings.Contains(stderr, "cannot arm the guard") {
+		t.Errorf("stderr %q refuses to start, want the reading tolerated first", stderr)
+	}
 }

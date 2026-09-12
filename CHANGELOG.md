@@ -104,6 +104,14 @@ history rather than as a diff against a public release.
   it is present the guard waits, logs why it cannot arm, and arms itself
   within one interval of the file being removed. A `systemctl stop` in
   that state is still a clean stop.
+- A sensor that was present but unreadable made the guard refuse to
+  start, contradicting the "unreadable" and "not a number" rows of the
+  specification, which absorb `--read-retries` failures before stopping.
+  Arming took one reading and had no retry budget to spend, so a single
+  transient bus error on a node that was still coming up exited 2 and
+  fired the emergency stop, where the same error one interval later
+  would have been tolerated twice. Arming no longer reads: the chip and
+  attribute are still resolved, and the loop decides.
 
 ## [0.10.0] - 2026-09-12
 

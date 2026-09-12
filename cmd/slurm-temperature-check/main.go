@@ -269,18 +269,19 @@ func arm(o *options, log *slog.Logger) (*guard.Guard, error) {
 		return nil, fmt.Errorf("board %s (%s line %d): %w", board, o.configPath, entry.Line, err)
 	}
 
-	src := guard.NewSensors(selected)
-	// Prove the sensors are readable before reporting readiness, so that a
-	// mainboard whose sensor moved fails `systemctl start` visibly instead of
-	// tripping one interval later.
-	if _, err := src.Read(); err != nil {
-		return nil, err
-	}
-
+	// The sensors are deliberately not read here. Select() has already proven
+	// that the configured chip and attribute exist, which is what rows 11 and
+	// 12 refuse to start for. An attribute that exists but cannot be read is
+	// rows 7 and 8 instead -- "tolerate, then stop" -- and reading once at
+	// startup turned those into a refusal to start: a single transient bus
+	// error while the node was still coming up became fatal, where the very
+	// same error one interval later is absorbed twice over by the retry
+	// budget. Both paths end with the node out of service if the sensor
+	// really is gone, so nothing is lost by letting the loop decide it.
 	return &guard.Guard{
 		Board:        board,
 		Max:          entry.Max,
-		Sensors:      src,
+		Sensors:      guard.NewSensors(selected),
 		DisablePath:  o.disablePath,
 		OverridePath: o.overridePath,
 		Interval:     o.interval,

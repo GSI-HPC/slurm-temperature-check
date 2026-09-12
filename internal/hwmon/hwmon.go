@@ -71,6 +71,10 @@ func (s Sensor) Name() string {
 // fails, and the attribute disappears with its device on a module unload.
 // Both surface here as an error, and the caller treats an error as "the
 // temperature is unknown".
+//
+// The chip the reading came from is confirmed before the value is returned,
+// so a device that has been replaced behind the sensor's path fails the same
+// way an unreadable one does.
 func (s Sensor) Read() (MilliCelsius, error) {
 	b, err := os.ReadFile(s.path)
 	if err != nil {
@@ -80,7 +84,41 @@ func (s Sensor) Read() (MilliCelsius, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read %s: %q is not an integer: %w", s.Name(), strings.TrimSpace(string(b)), err)
 	}
+	if err := s.confirmChip(); err != nil {
+		return 0, err
+	}
 	return MilliCelsius(v), nil
+}
+
+// confirmChip re-composes the chip name of the hwmon device the sensor was
+// resolved against, and fails when it is no longer the chip that was
+// selected.
+//
+// A path below /sys/class/hwmon carries an index, not an identity. The kernel
+// allocates hwmonN from an IDA that hands out the lowest free number, so a
+// device that goes away frees its number for whatever registers next. A
+// sensor resolved once at startup and then read by that path for the life of
+// the process — weeks, on a worker node — would follow the index onto the new
+// device: the read succeeds, so the retry budget is reset rather than spent,
+// the value is compared against a limit that was chosen for different
+// hardware, and the journal goes on naming the chip that was selected. A node
+// whose watched device was unbound would run unguarded with nothing anywhere
+// to say so, which is the one outcome this program exists to prevent.
+//
+// Confirming costs one further attribute read per sensor per pass, against a
+// check interval of seconds. It happens after the value has been read rather
+// than before, so that a device replaced between the two reads is caught by
+// the comparison instead of straddled by it.
+func (s Sensor) confirmChip() error {
+	dir := filepath.Dir(s.path)
+	chip, err := chipName(dir)
+	if err != nil {
+		return fmt.Errorf("confirm %s: %w", s.Name(), err)
+	}
+	if chip != s.Chip {
+		return fmt.Errorf("confirm %s: %s now holds %s", s.Name(), dir, chip)
+	}
+	return nil
 }
 
 var tempAttr = regexp.MustCompile(`^temp([0-9]+)_input$`)

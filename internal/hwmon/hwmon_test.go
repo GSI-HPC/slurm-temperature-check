@@ -335,6 +335,58 @@ func TestSensorRead(t *testing.T) {
 	}
 }
 
+// TestSensorReadConfirmsChip covers the hwmon index being recycled under a
+// sensor that was resolved once at startup. The class directory numbers
+// devices from an IDA that hands out the lowest free number, so a device that
+// goes away frees its number for the next one to register, and a guard armed
+// on the first would otherwise go on reading the second and comparing it
+// against the first one's limit.
+func TestSensorReadConfirmsChip(t *testing.T) {
+	dir := build(t,
+		chip{dev: "pci0000:00/0000:00:18.3", subsystem: "pci", name: "k10temp",
+			temps: map[int]temp{1: {label: "Tctl", reading: "50000"}}},
+		chip{dev: "platform/nct6775.656", subsystem: "platform", name: "nct6775",
+			temps: map[int]temp{1: {label: "SYSTIN", reading: "30000"}}})
+
+	sensors, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	var watched Sensor
+	for _, s := range sensors {
+		if s.Name() == "k10temp-pci-00c3/Tctl" {
+			watched = s
+		}
+	}
+	if watched.Chip == "" {
+		t.Fatalf("k10temp-pci-00c3/Tctl not discovered, got %v", sensors)
+	}
+	if got, err := watched.Read(); err != nil || got != 50000 {
+		t.Fatalf("Read() = %v, %v; want 50000, <nil>", got, err)
+	}
+
+	// The kernel unbinds k10temp and hands its freed index to the Super-I/O
+	// chip: the class entry keeps its name and points at a different device.
+	// The attribute behind it still reads, and reads a plausible 30 C.
+	other, err := filepath.EvalSymlinks(filepath.Join(dir, "hwmon1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recycled := filepath.Join(dir, "hwmon0")
+	if err := os.Remove(recycled); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, recycled); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := watched.Read()
+	if err == nil {
+		t.Errorf("Read() = %v, <nil> after the index was recycled; want an error, "+
+			"because that reading is the other chip's and the limit is not", got)
+	}
+}
+
 func TestSelect(t *testing.T) {
 	dir := build(t,
 		chip{dev: "pci0000:00/0000:00:18.3", subsystem: "pci", name: "k10temp",

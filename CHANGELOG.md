@@ -39,6 +39,18 @@ history rather than as a diff against a public release.
   watches every hub and compares the hottest of them. It also stops the
   entry depending on the i2c adapter number, which the kernel assigns at
   probe time.
+- A sensor followed the `/sys/class/hwmon/hwmonN` index rather than the
+  device behind it. The path was resolved once, when the guard armed,
+  and read unchanged for the life of the process; the kernel allocates
+  that number from an IDA that hands out the lowest free one, so a
+  watched device that is unbound frees its number for whatever registers
+  next. The guard then read the new device's temperature, compared it
+  against a limit chosen for the old one and logged it under the old
+  one's name. Nothing failed, so the retry budget was reset rather than
+  spent, and a node whose sensor had gone away kept running jobs while
+  reporting `ok`. Each reading is now confirmed against the chip name
+  the sensor was selected as, and a mismatch is treated as an unreadable
+  sensor: tolerated within the retry budget, then a trip.
 - The commit-message lint rejected any subject holding a capital letter
   anywhere in it. `subject-case: [2, always, lower-case]` is satisfied
   only when the subject equals its own lower-cased form, so no subject

@@ -5,15 +5,36 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Before this file begins
+
+The package was written and put into service inside GSI well before it
+was published here. Versions up to 0.9.3 exist only in an internal
+repository and were never released publicly, so the first entry below
+describes a rewrite of something no reader outside GSI has seen. That is
+the reason it arrives without a predecessor to compare against.
+
+The numbering continues the internal series instead of restarting at
+0.1.0. The nodes already running the package carry those versions in
+their RPM database, and a package numbered 0.1.0 would be older than what
+is installed on them, so `dnf` would refuse it as a downgrade.
+
+The Changed, Removed and Fixed entries of 0.10.0 are kept for the two
+audiences they still serve: the operators upgrading the machines that run
+the internal version, who need to know what changes under them, and
+anyone later asking why the package is shaped the way it is. Read them as
+history rather than as a diff against a public release.
+
 ## [Unreleased]
 
 ## [0.10.0] - 2026-09-12
 
-Reimplementation of the mechanism as a single dependency-free binary. The
-interlock it provides is the same one as before — a node over its
-mainboard's temperature limit stops running jobs — but the program, its
-configuration format and the way the jobs are killed are all new, so
-upgrading is a migration rather than a version bump. Read
+First public release, and a reimplementation of the internal predecessor
+as a single dependency-free binary. The interlock itself is unchanged — a
+node over its mainboard's temperature limit stops running SLURM jobs —
+but the program, its configuration format and the way the jobs are killed
+are all new. For a node already running the internal version this is a
+migration rather than an upgrade: the configuration is not read by the
+new binary and has to be rewritten as a board table. Read
 [Install](README.md#install) before rolling it out.
 
 ### Added

@@ -95,7 +95,15 @@ runs:
         # on Fedora), that this release's systemd accepts every directive in
         # the shipped units, and that the installed binary actually resolves
         # the shipped board table against a node.
-        dnf -y install rpm-artifacts/slurm-temperature-check-*.rpm
+        # Only the binary package: the glob also matches the SRPM, which dnf
+        # refuses to install outright, and the debuginfo/debugsource
+        # subpackages, which are release artifacts rather than part of this
+        # test. Exactly one file must remain after the exclusions.
+        pkg="$(find rpm-artifacts -name 'slurm-temperature-check-*.rpm' \
+                 ! -name '*.src.rpm' ! -name '*-debuginfo-*' ! -name '*-debugsource-*')"
+        test -n "$pkg"
+        test "$(printf '%s\n' "$pkg" | wc -l)" -eq 1
+        dnf -y install "$pkg"
         rpm -V slurm-temperature-check
         getent passwd slurm-temp-check
         for f in /usr/bin/slurm-temperature-check \
@@ -158,25 +166,42 @@ runs:
             --override-file="$tree/override"
         }
 
+        # Each assertion captures the output first and matches against the
+        # variable. Piping into `grep -q` would let grep exit at the first
+        # match, hand the producer a SIGPIPE and, under pipefail, fail the
+        # step on a successful assertion.
+        expect() {
+          local want="$1" out rc=0
+          out="$(check)" || rc=$?
+          printf '%s\n' "$out"
+          if ! grep -q "$want" <<<"$out"; then
+            echo "::error::expected \"$want\" in the --check output above"
+            return 99
+          fi
+          return "$rc"
+        }
+
         slurm-temperature-check --version
-        slurm-temperature-check --list --hwmon.path="$tree/class/hwmon" | grep -q 'k10temp-pci-00c3'
+        list="$(slurm-temperature-check --list --hwmon.path="$tree/class/hwmon")"
+        printf '%s\n' "$list"
+        grep -q 'k10temp-pci-00c3' <<<"$list"
 
         # 45 C against the table's 60 C limit: the node may run jobs.
-        check | tee /dev/stderr | grep -q 'verdict  ok'
+        expect 'verdict  ok'
 
         # 61 C: over the limit, so the guard reports a trip and exits 1.
         echo 61000 > "$dev/hwmon/hwmon0/temp1_input"
-        rc=0; check || rc=$?
+        rc=0; expect 'verdict  trip' || rc=$?
         test "$rc" -eq 1
 
         # The disable file suspends checking even while over the limit.
         touch "$tree/disable"
-        check | grep -q 'verdict  disabled'
+        expect 'verdict  disabled'
         rm "$tree/disable"
 
         # The override file stands in for the sensor.
         echo 25 > "$tree/override"
-        check | grep -q 'verdict  ok'
+        expect 'verdict  ok'
         rm "$tree/override"
 
         # An unknown board must refuse to arm rather than run unguarded.

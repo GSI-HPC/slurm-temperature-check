@@ -137,7 +137,7 @@ export GOPROXY=off
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 
 %changelog
-* Sun Sep 13 2026 Dennis Klein <d.klein@gsi.de> - 0.11.1-1
+* Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.11.1-1
 - Watch every DIMM on the Dell FRANMDCP07 entry of the shipped table; naming
   the SPD hub in full pinned one DIMM and left the others unwatched
 - Confirm on every reading that the hwmon device behind a sensor is still the

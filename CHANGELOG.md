@@ -26,7 +26,7 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
-## [0.11.1] - 2026-09-13
+## [0.11.1] - 2026-09-12
 
 Two of these are cases where the guard kept a node in service while its
 temperature was not being watched at all. Nothing changes about the

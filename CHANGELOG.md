@@ -26,6 +26,41 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-12
+
+Correctness fixes to the interlock itself. Four of them could leave a node
+running jobs above its limit, and three could stop a node that was not too
+hot. No configuration format, flag or exit code changes meaning, and the
+`--check` output gains one line.
+
+**These fixes do not take effect when the package is upgraded.** `%postun`
+deliberately does not restart the guard, so a running guard keeps the old
+binary until someone restarts it on a drained node, or until the node next
+reboots. Plan that restart: until it happens, the node is still running the
+behaviour described below.
+
+**Check a locally modified `boards.conf` before that restart.** Composed chip
+names are corrected in this release, so a `chip` that names a device in full
+may now spell it differently:
+
+| Device | Was | Now |
+|---|---|---|
+| PCI, bus other than 0 | `i350bb-pci-0001` | `i350bb-pci-8301` |
+| ACPI | `acpitz-isa-0000` | `acpitz-acpi-0` |
+| behind a class device (NVMe, thermal zone) | `nvme-virtual-0` | `nvme-pci-0300` |
+
+Names on PCI bus 0 (`k10temp-pci-00c3`), platform devices
+(`coretemp-isa-0000`) and I2C (`spd5118-i2c-20-50`) are unchanged, so every
+entry in the shipped table still resolves. A table edited on the node is kept
+as `%config(noreplace)` and is not: run `slurm-temperature-check --list` and
+`--check` on such a node before restarting the guard, because a `chip` that
+no longer resolves makes the guard refuse to arm, and a guard that cannot arm
+arms the emergency stop. Using the bare driver prefix (`k10temp`) avoids the
+question entirely and is the better form anyway.
+
+An unmodified `boards.conf` is replaced by the packaged one, which picks up
+the dual-socket corrections below; a modified one keeps whatever it has.
+
 ### Fixed
 
 - A board entry naming its chip by driver prefix watched only one hwmon
@@ -257,5 +292,6 @@ new binary and has to be rewritten as a board table. Read
   time was replaced with the current time on every pass, so the documented
   "override present but too old" case could not occur.
 
-[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.11.0
 [0.10.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.10.0

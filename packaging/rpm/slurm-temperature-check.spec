@@ -6,7 +6,7 @@
 
 %global goipath         github.com/GSI-HPC/slurm-temperature-check
 %global gomodulesmode   GO111MODULE=on
-Version:                0.10.0
+Version:                0.11.0
 
 %gometa
 
@@ -137,6 +137,22 @@ export GOPROXY=off
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 
 %changelog
+* Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.11.0-1
+- Select every hwmon device of a driver, not one per composed chip name, so a
+  second device of the same driver cannot go unwatched
+- Compose chip names as libsensors does: PCI addresses carry the bus, ACPI
+  devices are -acpi-, and a device behind a class device resolves to its bus
+- Watch every socket on the dual-socket entries of the shipped board table
+- Refuse an override reading or a max_celsius that is not a temperature;
+  nan and out-of-range values previously read as far below any limit
+- Report which source a reading came from, in the journal, --check and the
+  systemd status line
+- Drop Wants= from the slurmd drop-in, which started an unenabled guard
+- Consult the disable file before arming, so a suspended node that cannot
+  arm keeps running instead of firing the emergency stop on every boot
+- Tolerate an unreadable sensor at startup as the check loop does
+- Measure the watchdog staleness window on the monotonic clock
+
 * Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.10.0-1
 - Single unprivileged service reading hwmon sysfs directly, replacing the
   reader/checker pair that communicated through a file in /run

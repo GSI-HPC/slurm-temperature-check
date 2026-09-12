@@ -130,6 +130,12 @@ history rather than as a diff against a public release.
   file and the README, was left over from that description and had it
   backwards: the window already follows `--interval`, and raising
   `WatchdogSec=` only slows detection down.
+- `scripts/check-commit-context.sh` read its commit list from a process
+  substitution, which `pipefail` does not observe, so a `git rev-list`
+  that failed — an unreachable ref, a shallow clone without the base
+  commit — fed the loop nothing and the script exited 0. A check that
+  reports success having examined no commit at all now fails instead,
+  and so does an empty range.
 
 ## [0.10.0] - 2026-09-12
 

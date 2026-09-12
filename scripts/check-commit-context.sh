@@ -34,9 +34,22 @@ if [ "${1:-}" = "--message-file" ]; then
   check_message "commit message" "$(grep -v '^#' "$2" || true)"
 else
   [ $# -eq 1 ] || { echo "usage: $0 <rev-range> | --message-file <file>" >&2; exit 2; }
+  # The range is captured rather than piped in from a process substitution.
+  # pipefail does not observe a process substitution, so a rev-list that fails
+  # -- an unreachable ref, a shallow clone that does not contain the base --
+  # fed the loop nothing and the script exited 0, reporting success having
+  # checked no commit at all. An empty range is refused for the same reason.
+  if ! commits="$(git rev-list --no-merges "$1")"; then
+    echo "cannot list the commits in $1" >&2
+    exit 2
+  fi
+  if [ -z "$commits" ]; then
+    echo "no commits to check in $1" >&2
+    exit 2
+  fi
   while read -r sha; do
     check_message "commit $sha" "$(git log -1 --format='%B' "$sha")"
-  done < <(git rev-list --no-merges "$1")
+  done <<< "$commits"
 fi
 
 exit $fail

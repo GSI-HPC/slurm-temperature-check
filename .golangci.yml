@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - revive
+    - unconvert
+    - usetesting
+
+  settings:
+    revive:
+      rules:
+        # Every exported identifier in this tree is documented; keep it that
+        # way, since the packages are the specification of a safety device.
+        - name: exported
+        - name: error-strings
+        - name: error-return
+        - name: context-as-argument
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

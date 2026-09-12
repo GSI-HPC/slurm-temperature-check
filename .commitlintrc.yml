@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Conventional Commits structure enforcement; see CONTRIBUTING.md for the
+# full commit-message rules (including the self-contained-facts rule that
+# scripts/check-commit-context.sh guards).
+extends:
+  - "@commitlint/config-conventional"
+rules:
+  type-enum:
+    - 2
+    - always
+    - [feat, fix, docs, test, refactor, perf, build, ci, chore, revert]
+  scope-enum:
+    - 2
+    - always
+    - [guard, hwmon, config, systemd, sysusers, rpm, ci, docs, scripts, deps]
+  header-max-length: [2, always, 72]
+  body-leading-blank: [2, always]
+  body-max-line-length: [2, always, 100]
+  subject-full-stop: [2, never, "."]
+  subject-case: [2, always, lower-case]

@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Third-party actions are pinned to full commit SHAs (supply-chain
+# requirement); every job carries the minimum permissions it needs.
+permissions: {}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          fmt="$(gofmt -l cmd internal)"
+          if [ -n "$fmt" ]; then
+            echo "gofmt required on:" >&2
+            echo "$fmt" >&2
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+      - name: go test
+        run: go test -race ./...
+      - name: No dependencies
+        run: |
+          # The guard's dependency surface is a deliberate property: a safety
+          # device on every worker node should not be able to break because a
+          # third-party module changed. go.mod must stay free of requires,
+          # and there must be no go.sum to keep in sync.
+          if grep -qE '^\s*require' go.mod; then
+            echo "go.mod has grown a dependency; see CONTRIBUTING.md" >&2
+            grep -nE '^\s*require' -A5 go.mod >&2
+            exit 1
+          fi
+          test ! -e go.sum
+
+  lint-shipped-files:
+    # Static checks of the packaged files with the tools that ship with the
+    # runner's systemd (255 on ubuntu-24.04), which is newer than EL9's 252.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck scripts/*.sh .githooks/commit-msg
+      - name: sysusers file
+        run: |
+          systemd-sysusers --dry-run \
+            "$PWD"/packaging/systemd/slurm-temperature-check.sysusers
+      - name: Units and the slurmd drop-in
+        run: |
+          set -euo pipefail
+          cd packaging/systemd
+          # verify only warns about unknown directives, so its output is
+          # checked too.
+          out="$(systemd-analyze verify --man=no \
+            slurm-temperature-check.service \
+            slurm-temperature-check-emergency-stop.service 2>&1)"
+          printf '%s\n' "$out"
+          if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+          # The drop-in against a stand-in for the SchedMD slurmd unit. At
+          # debug level verify dumps the loaded unit, which shows whether the
+          # drop-in was picked up and parsed.
+          tmp="$(mktemp -d)"
+          cat > "$tmp/slurmd.service" <<'EOF'
+          [Unit]
+          Description=stand-in for the SchedMD slurmd unit
+          [Service]
+          ExecStart=/usr/bin/true
+          EOF
+          cp -r slurmd.service.d "$tmp/"
+          out="$(cd "$tmp" && SYSTEMD_LOG_LEVEL=debug \
+            systemd-analyze verify --man=no slurmd.service 2>&1)"
+          if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+          grep -q 'DropIn Path: .*/slurmd.service.d/temperature-check.conf' <<<"$out"
+          grep -q 'slurm-temperature-check.service' <<<"$out"
+      - name: Guard hardening score
+        run: |
+          # --threshold= takes the 0-100 scale behind the printed exposure
+          # level; 30 is the upper end of systemd's "OK" band, so dropping a
+          # hardening directive from the guard fails the job.
+          #
+          # The emergency stop is deliberately not scored. It has to run as
+          # root and reach systemd's private bus to stop and kill units,
+          # which caps what its score can be; its hardening is reviewed by
+          # reading the unit.
+          cd packaging/systemd
+          systemd-analyze security --offline=yes --no-pager --threshold=30 \
+            slurm-temperature-check.service
+      - name: Board table parses
+        run: |
+          # A second reader of the shipped table, independent of the Go test,
+          # so a stray edit to it fails CI even if the test is skipped.
+          grep -qE '^\[TESTBOARD\]$' packaging/config/boards.conf
+          awk '
+            /^[[:space:]]*(#|;)/ || /^[[:space:]]*$/ { next }
+            /^\[.*\]$/ { next }
+            !/^[[:space:]]*(chip|sensor|max_celsius)[[:space:]]*=/ {
+              print "unexpected line " NR ": " $0 > "/dev/stderr"; bad = 1
+            }
+            END { exit bad }
+          ' packaging/config/boards.conf
+
+  rpm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # EL9 is the supported target; EL10 and Fedora run advisory-only to
+          # catch packaging-macro drift early.
+          - image: rockylinux/rockylinux:9
+            artifact: el9
+            experimental: false
+          - image: rockylinux/rockylinux:10
+            artifact: el10
+            experimental: true
+          - image: fedora:latest
+            artifact: fedora
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+    container:
+      image: ${{ matrix.image }}
+      # --privileged solely so the offline-build proof (`unshare -n`) can
+      # create a network namespace inside the container.
+      options: --privileged
+    steps:
+      # The images ship without git. Without it actions/checkout silently
+      # falls back to downloading a repository tarball, which leaves no .git
+      # directory and makes the action's `git archive HEAD` fail.
+      - name: Install git for checkout
+        run: dnf -y install git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rpm-build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpms-${{ matrix.artifact }}
+          path: rpm-artifacts/
+
+  commit-lint:
+    # Dependabot's generated messages carry release-note links longer than
+    # the body line limit and action names longer than the header limit;
+    # they are machine-shaped and reviewed as such, so skip them.
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # fetch-depth: 0 is required so the full PR commit range exists
+      # locally; without it the range is unavailable and nothing would be
+      # checked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: commitlint (structure)
+        uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6.2.1
+        with:
+          configFile: .commitlintrc.yml
+      - name: self-contained-facts guard
+        run: |
+          ./scripts/check-commit-context.sh \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"

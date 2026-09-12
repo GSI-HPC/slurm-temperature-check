@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Local mirror of the CI commit-message checks. Opt in with:
+#   git config core.hooksPath .githooks
+set -e
+
+scripts/check-commit-context.sh --message-file "$1"
+
+# Structure check, when a commitlint installation is available; CI runs it
+# authoritatively either way.
+if command -v npx >/dev/null 2>&1; then
+  if npx --no-install commitlint --version >/dev/null 2>&1; then
+    npx --no-install commitlint --config .commitlintrc.yml --edit "$1"
+  fi
+fi

@@ -1,0 +1,128 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The
+format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and the project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.10.0] - 2026-09-12
+
+Reimplementation of the mechanism as a single dependency-free binary. The
+interlock it provides is the same one as before — a node over its
+mainboard's temperature limit stops running jobs — but the program, its
+configuration format and the way the jobs are killed are all new, so
+upgrading is a migration rather than a version bump. Read
+[Install](README.md#install) before rolling it out.
+
+### Added
+
+- `slurm-temperature-check`, one unprivileged `Type=notify` service that
+  reads the mainboard's temperature sensor from the kernel's hwmon class
+  in sysfs once per interval and exits non-zero when the node must stop
+  running jobs. It holds no privilege: every attribute it reads is mode
+  0444, its unit has an empty `CapabilityBoundingSet=`, no network, no
+  devices and a system-call filter, and CI fails if a hardening directive
+  is dropped.
+- `slurm-temperature-check-emergency-stop.service`, the only privileged
+  part, reachable along exactly one edge — the guard's `OnFailure=`. It
+  kills the SLURM job steps by cgroup membership
+  (`systemctl kill --kill-whom=all` on `slurmstepd.scope` and on
+  `slurmd.service`, which covers both the cgroup/v2 scope layout of SLURM
+  22.05+ and the older one) and then stops `slurmd`. Its commands are
+  fixed in the unit file and take no input from the configuration or the
+  sensors.
+- `WatchdogSec=60` with the keep-alive sent from the check loop, so a loop
+  that stops turning is killed by systemd and lands in the failed state
+  that arms the emergency stop. This is what replaces the previous
+  design's staleness check on the file between the two processes.
+- `--list`, which prints the node's chips, sensors, labels and live
+  readings as the program computes them, and `--check`, which resolves the
+  board table against the node and takes one reading without starting the
+  guard. Both are meant to be run before the unit is enabled; a guard that
+  cannot arm arms the emergency stop.
+- One board table, `/etc/slurm-temperature-check/boards.conf`, holding the
+  sensor *and* the threshold per mainboard. The parser refuses unknown
+  keys, repeated sections, repeated keys, a missing threshold and a
+  threshold outside 20–150 °C, because each of those would otherwise
+  produce a node that looks guarded and is not.
+- Multi-socket support: a bare driver prefix as the `chip` (`k10temp`
+  rather than `k10temp-pci-00c3`) watches every chip of that driver and
+  compares the hottest of them.
+- CI: gofmt, go vet, golangci-lint and `go test -race`; `shellcheck`,
+  `systemd-sysusers --dry-run`, `systemd-analyze verify` of both units and
+  the `slurmd` drop-in, and a `systemd-analyze security` threshold on the
+  guard; RPM builds on Rocky 9 (required) plus Rocky 10 and Fedora
+  (advisory), each rebuilt from its SRPM inside a network namespace with
+  no interfaces, checked by an rpmlint policy, then installed, exercised
+  end to end against a fabricated sysfs tree and removed; commitlint and
+  self-contained-commit-message enforcement; a release workflow producing
+  RPM, SRPM and SHA256SUMS from a `vX.Y.Z` tag.
+- Dependabot version updates for the workflow actions.
+
+### Changed
+
+- Readings come from sysfs directly instead of from a parsed `sensors`
+  run, which removes the `lm_sensors` dependency, the per-reading
+  subprocess and its timeout, and the regular expression over
+  human-readable output. The previous expression, `(\d+)\.*\d+`, matched
+  `450` as readily as `45.0` and worked only because a shell pipeline
+  narrowed its input first.
+- Thresholds are compared against the exact reading rather than a
+  truncated integer. Readings are kept in the millidegrees the kernel
+  reports, so a node at 85.4 °C against an 85 °C limit now stops where it
+  previously did not.
+- The guard and the sensor reader are one process. The previous pair
+  communicated through `/run/temperature/temperature`, and that file was
+  the sole cause of the partial-read handling, the atomic-write
+  dependency, the error strings written where a number was expected and
+  the staleness check.
+- The `slurmd` drop-in carries `Wants=`/`After=` only. `BindsTo=` coupled
+  `slurmd`'s lifecycle to the guard in both directions, so every stop of
+  the guard — a package upgrade, a sensor repair — killed the jobs, and
+  `systemctl restart slurmd` could not be done without losing the
+  workload.
+- Diagnostics go to the journal as structured `log/slog` records instead
+  of to files under `/var/log/temperature`, so the logrotate and tmpfiles
+  configuration is gone. Repeated identical verdicts are not re-logged;
+  transitions and tolerated failures always are.
+- The package is built from a release tarball by a single spec with a real
+  `Source0`, rebuildable from its SRPM. The previous four spec files had
+  drifted to three different versions and copied files out of `/vagrant`,
+  so they only built inside a Vagrant VM.
+
+### Removed
+
+- `temperature-provider`, `temperature-provider.sh` and
+  `get_slurm_pids`. The first two are replaced by reading sysfs; the third
+  walked `pstree -p` output, which truncates at the terminal width unless
+  given `-l`, so a job tree wider than that yielded truncated PIDs that
+  belonged to unrelated processes and were then sent `SIGKILL`.
+- The `python3`, `python3-PyYAML`, `python3-atomicwrites`, `lm_sensors`
+  and `shadow-utils` dependencies. `python3-atomicwrites` is deprecated
+  upstream, and the user is now created from a sysusers.d file.
+- The `%post` scriptlet that moved the drop-ins to `/tmp`, restarted the
+  services and moved them back, to keep an upgrade from killing the jobs.
+  A transaction interrupted in the middle left the node running jobs with
+  no thermal protection and nothing reporting it. Upgrades now do not
+  restart the guard at all; see [Releases](CONTRIBUTING.md#releases).
+- The CentOS 7, Rocky 8 and Vagrant build and test harnesses, and the
+  2021–2022 design presentations under `doc/`. The state machine and the
+  dependency structure they described are in `README.md`.
+
+### Fixed
+
+- A missing `temperature_file_maximum_age_seconds` or `board_filename` in
+  the configuration raised an uncaught `KeyError`, which exited non-zero
+  and so killed the jobs on the node. Configuration errors are now
+  reported as messages naming the file, the line and the key.
+- A fresh install shipped only `*.conf.default`, so the services had no
+  configuration to read. A working board table is now installed as
+  `%config(noreplace)`.
+- The staleness check never applied to the override file, whose modification
+  time was replaced with the current time on every pass, so the documented
+  "override present but too old" case could not occur.
+
+[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.10.0

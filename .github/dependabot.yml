@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# Dependabot version updates. Security updates are enabled in the repository
+# settings, not here, and ignore the cooldown below.
+version: 2
+updates:
+  # Workflow actions. They are pinned to full commit SHAs with a trailing
+  # version comment (supply-chain requirement); Dependabot updates both.
+  #
+  # There is no gomod ecosystem entry: go.mod carries no requires, and CI
+  # fails if it grows one. A guard that runs on every worker node should not
+  # be able to break because a third-party module changed.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    # Let a release settle before adopting it: a compromised release is
+    # usually pulled within days.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]

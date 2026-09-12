@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# The unprivileged account the guard runs as. It needs no home, no shell and
+# no group memberships: everything it reads in /sys is mode 0444.
+# Type Name             ID GECOS                          Home Shell
+u slurm-temp-check - "SLURM temperature check" - -

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Flags for slurm-temperature-check, passed as $OPTIONS by the systemd unit.
+# Run `slurm-temperature-check --help` for the full list.
+#
+# Examples:
+#   OPTIONS="--interval=5s --read-retries=0"
+#   OPTIONS="--log.level=debug --log.format=json"
+#
+# Raising --interval above 30s needs WatchdogSec= in the unit raised with it;
+# see the comment there.
+OPTIONS=""

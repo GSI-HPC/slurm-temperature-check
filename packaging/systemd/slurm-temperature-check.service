@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
+#
+# The guard. It reads sysfs and nothing else, so it runs unprivileged; every
+# privileged action lives in slurm-temperature-check-emergency-stop.service,
+# which this unit reaches only by failing.
+#
+# The contract is the exit status. Exit 0 means "asked to stop" and leaves
+# slurmd alone, which is why `systemctl stop` on this unit is safe. Any
+# non-zero exit means the node's temperature is no longer known to be within
+# limits, and OnFailure= turns that into the emergency stop. There is
+# deliberately no Restart=: a guard that restarted itself out of a failure
+# would leave the node running jobs it had just declared unsafe.
+
+[Unit]
+Description=Stop SLURM jobs when this node exceeds its temperature limit
+Documentation=https://github.com/GSI-HPC/slurm-temperature-check
+OnFailure=slurm-temperature-check-emergency-stop.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=slurm-temp-check
+Group=slurm-temp-check
+EnvironmentFile=-/etc/sysconfig/slurm-temperature-check
+ExecStart=/usr/bin/slurm-temperature-check $OPTIONS
+Restart=no
+
+# The override file lives here. RuntimeDirectoryPreserve= keeps the directory
+# across a restart of this unit, so an override written before a start is
+# still there afterwards.
+RuntimeDirectory=slurm-temperature-check
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+
+# A loop that stops turning is the failure this design has to catch, because
+# nothing else would notice. systemd kills the service when the keep-alive
+# stops, the unit lands in failed, and the emergency stop runs. The value must
+# stay comfortably above twice --interval (10s by default); raise it before
+# raising the interval.
+WatchdogSec=60
+
+# Stopping is a clean stop: SIGTERM, exit 0, no emergency stop.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Hardening. The process reads /sys and /etc and writes nothing outside its
+# runtime directory. ProtectSystem=strict leaves /sys readable, and
+# ProtectKernelTunables=yes only makes it read-only, which is all this needs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

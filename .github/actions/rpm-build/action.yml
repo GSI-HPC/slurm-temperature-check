@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Build RPM
+description: >
+  Build the SRPM and binary RPM from the checked-out tree inside an
+  EL/Fedora container, rebuilding the SRPM with networking disabled to prove
+  the build needs nothing from the network, apply the rpmlint policy check,
+  then install the package, exercise the installed binary against a
+  fabricated sysfs tree with that container's own systemd, and remove it
+  again. Shared by ci.yml and release.yml so the recipe exists once.
+  Requires a job container started with --privileged (for `unshare -n`).
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        set -euxo pipefail
+        . /etc/os-release
+        if [ "${ID}" != "fedora" ]; then
+          dnf -y install epel-release
+        fi
+        # glibc-langpack-en: rpmlint 2.x parses the spec under
+        # LC_ALL=en_US.UTF-8, and a container without that locale makes bash
+        # print setlocale warnings that rpmlint reports as specfile-warning
+        # findings.
+        dnf -y install rpm-build rpmlint systemd-rpm-macros golang git-core \
+          util-linux glibc-langpack-en
+        # EL9's own go-rpm-macros predate the current Fedora macros, so EPEL
+        # ships them as -epel overlay packages; EL10 and Fedora carry the
+        # current macros under the plain names.
+        if [ "${ID}" = "fedora" ] || [ "${VERSION_ID%%.*}" -ge 10 ]; then
+          dnf -y install go-rpm-macros go-srpm-macros
+        else
+          dnf -y install go-rpm-macros-epel go-srpm-macros-epel
+        fi
+
+    - name: Build source tarball and SRPM
+      shell: bash
+      run: |
+        set -euxo pipefail
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        spec=packaging/rpm/slurm-temperature-check.spec
+        version="$(sed -n 's/^Version:[[:space:]]*//p' "$spec" | head -1)"
+        # The tarball must carry the name and prefix the expanded Source0
+        # expects (a GitHub archive of tag v${version}).
+        srcurl="$(rpmspec -P "$spec" | sed -n 's/^Source0:[[:space:]]*//p')"
+        base="${srcurl##*/}"
+        case "$srcurl" in *'#/'*) base="${srcurl##*#/}" ;; esac
+        mkdir -p "$HOME/rpmbuild/SOURCES"
+        git archive --format=tar.gz --prefix="slurm-temperature-check-${version}/" \
+          -o "$HOME/rpmbuild/SOURCES/${base}" HEAD
+        rpmbuild -bs "$spec"
+
+    - name: Rebuild binary RPM with networking disabled
+      shell: bash
+      run: |
+        set -euxo pipefail
+        # `unshare -n` runs the build in a network namespace with no
+        # interfaces, so any attempt to reach the network fails immediately.
+        # The program has no dependencies, so nothing legitimately needs it;
+        # GOPROXY=off inside the spec is belt and braces. The build also runs
+        # from a directory that is not the checkout, so the SRPM has to be
+        # self-contained the way it is for everyone else.
+        cd "$(mktemp -d)"
+        unshare -n rpmbuild --rebuild "$HOME"/rpmbuild/SRPMS/slurm-temperature-check-*.src.rpm
+
+    - name: rpmlint policy check
+      shell: bash
+      run: |
+        set -euxo pipefail
+        ./scripts/run-rpmlint.sh packaging/rpm/slurm-temperature-check.spec \
+          "$HOME"/rpmbuild/SRPMS/slurm-temperature-check-*.src.rpm \
+          "$HOME"/rpmbuild/RPMS/*/slurm-temperature-check-*.rpm
+
+    - name: Stage artifacts
+      shell: bash
+      run: |
+        set -euxo pipefail
+        mkdir -p rpm-artifacts
+        cp "$HOME"/rpmbuild/SRPMS/slurm-temperature-check-*.src.rpm \
+           "$HOME"/rpmbuild/RPMS/*/slurm-temperature-check-*.rpm \
+           rpm-artifacts/
+
+    - name: Install, verify and remove the package
+      shell: bash
+      run: |
+        set -euxo pipefail
+        # The container has no running systemd, so the unit scriptlets take
+        # their "nothing to do" branches; what is checked here is the file
+        # layout, the user creation (%pre on EL, rpm's own sysusers support
+        # on Fedora), that this release's systemd accepts every directive in
+        # the shipped units, and that the installed binary actually resolves
+        # the shipped board table against a node.
+        dnf -y install rpm-artifacts/slurm-temperature-check-*.rpm
+        rpm -V slurm-temperature-check
+        getent passwd slurm-temp-check
+        for f in /usr/bin/slurm-temperature-check \
+                 /usr/lib/systemd/system/slurm-temperature-check.service \
+                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service \
+                 /usr/lib/systemd/system/slurmd.service.d/temperature-check.conf \
+                 /usr/lib/sysusers.d/slurm-temperature-check.conf \
+                 /etc/slurm-temperature-check/boards.conf \
+                 /etc/sysconfig/slurm-temperature-check; do
+          test -f "$f"
+        done
+
+        # systemd-analyze verify exits 0 on an unknown directive (it only
+        # warns), so its output is checked as well.
+        out="$(systemd-analyze verify --man=no \
+                 /usr/lib/systemd/system/slurm-temperature-check.service \
+                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service 2>&1)"
+        printf '%s\n' "$out"
+        if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+
+        # The slurmd drop-in against a stand-in for the slurmd unit, which is
+        # not installed here. At debug level verify dumps the loaded unit,
+        # which shows whether the drop-in was picked up and parsed.
+        cat > /etc/systemd/system/slurmd.service <<'EOF'
+        [Unit]
+        Description=stand-in for the SchedMD slurmd unit
+        [Service]
+        ExecStart=/usr/bin/true
+        EOF
+        out="$(cd /etc/systemd/system && SYSTEMD_LOG_LEVEL=debug \
+                 systemd-analyze verify --man=no slurmd.service 2>&1)"
+        if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+        grep -q 'DropIn Path: /usr/lib/systemd/system/slurmd.service.d/temperature-check.conf' <<<"$out"
+        grep -q 'slurm-temperature-check.service' <<<"$out"
+        rm -f /etc/systemd/system/slurmd.service
+
+        # End to end against a fabricated sysfs tree, which is the only way
+        # to exercise the resolution path in a container with no sensors: the
+        # shipped table's TESTBOARD entry names chip k10temp and sensor Tctl,
+        # and the tree below is built to match it. This proves the shipped
+        # binary and the shipped table agree.
+        tree="$(mktemp -d)"
+        dev="$tree/devices/pci0000:00/0000:00:18.3"
+        mkdir -p "$dev/hwmon/hwmon0" "$tree/class/hwmon" "$tree/bus/pci"
+        echo k10temp > "$dev/hwmon/hwmon0/name"
+        echo Tctl    > "$dev/hwmon/hwmon0/temp1_label"
+        echo 45000   > "$dev/hwmon/hwmon0/temp1_input"
+        ln -s "$dev" "$dev/hwmon/hwmon0/device"
+        ln -s "$tree/bus/pci" "$dev/subsystem"
+        ln -s "$dev/hwmon/hwmon0" "$tree/class/hwmon/hwmon0"
+        echo TESTBOARD > "$tree/board_name"
+
+        check() {
+          slurm-temperature-check --check \
+            --hwmon.path="$tree/class/hwmon" \
+            --board-name-path="$tree/board_name" \
+            --disable-file="$tree/disable" \
+            --override-file="$tree/override"
+        }
+
+        slurm-temperature-check --version
+        slurm-temperature-check --list --hwmon.path="$tree/class/hwmon" | grep -q 'k10temp-pci-00c3'
+
+        # 45 C against the table's 60 C limit: the node may run jobs.
+        check | tee /dev/stderr | grep -q 'verdict  ok'
+
+        # 61 C: over the limit, so the guard reports a trip and exits 1.
+        echo 61000 > "$dev/hwmon/hwmon0/temp1_input"
+        rc=0; check || rc=$?
+        test "$rc" -eq 1
+
+        # The disable file suspends checking even while over the limit.
+        touch "$tree/disable"
+        check | grep -q 'verdict  disabled'
+        rm "$tree/disable"
+
+        # The override file stands in for the sensor.
+        echo 25 > "$tree/override"
+        check | grep -q 'verdict  ok'
+        rm "$tree/override"
+
+        # An unknown board must refuse to arm rather than run unguarded.
+        echo NOSUCHBOARD > "$tree/board_name"
+        rc=0; check || rc=$?
+        test "$rc" -eq 2
+
+        # rpm -e rather than dnf: the option that stops dnf from taking the
+        # package's dependencies (systemd) out with it is spelled
+        # --noautoremove on dnf4 and --no-autoremove on current dnf5, and
+        # dnf5 rejects either before the subcommand. Removing exactly this
+        # package runs the same %postun, which is what the assertions below
+        # check.
+        rpm -e slurm-temperature-check
+        test ! -e /usr/bin/slurm-temperature-check
+        test ! -e /usr/lib/systemd/system/slurm-temperature-check.service
+        test ! -e /usr/lib/systemd/system/slurmd.service.d
+        # %config(noreplace) files are kept as .rpmsave only when modified;
+        # unmodified ones go away with the package.
+        test ! -e /etc/slurm-temperature-check/boards.conf

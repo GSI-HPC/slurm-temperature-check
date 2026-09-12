@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
+#
+# Started by systemd through OnFailure= when the guard fails. It is the only
+# privileged part of the package, and it is reachable only along that one
+# edge: it has no [Install] section, so nothing else pulls it in.
+#
+# The order of the three commands matters.
+#
+# 1. Job steps first, because they are the thermal load. SLURM 22.05 and later
+#    with the cgroup/v2 plugin put each step under slurmstepd.scope, which is
+#    deliberately outside slurmd's own cgroup so that steps survive a slurmd
+#    restart. `systemctl kill --kill-whom=all` kills a cgroup's whole
+#    membership and so does not care how deeply a job nested its processes.
+#
+# 2. slurmd's own cgroup next, which is where older configurations keep the
+#    step processes, and which --kill-whom=all reaches whatever KillMode= the
+#    slurmd unit sets. SchedMD ships KillMode=process, so a plain stop would
+#    leave every one of those processes running.
+#
+# 3. `stop` last, so the unit ends in a stopped state. A stop requested
+#    through systemd is not a restart trigger, so this also disarms a
+#    Restart= a site may have added to slurmd.service; SIGKILL alone would
+#    let such a setting bring slurmd back up on a node that has just been
+#    declared too hot.
+#
+# The kills are prefixed with "-" because a node may legitimately have neither
+# cgroup: slurmstepd.scope exists only while a job is running, and slurmd may
+# not be installed at all. Only the final stop has to succeed.
+
+[Unit]
+Description=Kill SLURM jobs and stop slurmd after a temperature-check failure
+Documentation=https://github.com/GSI-HPC/slurm-temperature-check
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all slurmstepd.scope
+ExecStart=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all slurmd.service
+ExecStart=/usr/bin/systemctl stop slurmd.service
+
+# Hardening. Talking to systemd needs the private D-Bus socket and nothing
+# else: no network, no devices, no capabilities of its own beyond being root.
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077

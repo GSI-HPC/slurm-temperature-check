@@ -26,6 +26,17 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+### Fixed
+
+- The commit-message lint rejected any subject holding a capital letter
+  anywhere in it. `subject-case: [2, always, lower-case]` is satisfied
+  only when the subject equals its own lower-cased form, so no subject
+  could name a sensor label, a bus or a distribution the way the code
+  and the board table spell it — `Tctl`, `DMI`, `EL9` — and a
+  contributor's choice was to misspell the identifier or not to name
+  it. Only the first word is held to lower case now, which is what
+  CONTRIBUTING.md described all along.
+
 ## [0.11.0] - 2026-09-12
 
 Correctness fixes to the interlock itself. Four of them could leave a node

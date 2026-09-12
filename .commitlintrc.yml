@@ -17,4 +17,9 @@ rules:
   body-leading-blank: [2, always]
   body-max-line-length: [2, always, 100]
   subject-full-stop: [2, never, "."]
-  subject-case: [2, always, lower-case]
+  # Only the first word is held to lower case. The "always lower-case"
+  # target compares the whole subject against its own lower-cased form, which
+  # forbids every identifier this project has to name in a subject -- Tctl,
+  # SLURM, DMI, EL9 -- and spelling them wrongly to satisfy a lint rule makes
+  # the log worse than the capital it saves.
+  subject-case: [2, never, [sentence-case, start-case, pascal-case, upper-case]]

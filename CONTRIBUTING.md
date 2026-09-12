@@ -47,7 +47,9 @@ Every commit follows [Conventional Commits](https://www.conventionalcommits.org/
 `feat fix docs test refactor perf build ci chore revert` and scopes
 `guard hwmon config systemd sysusers rpm ci docs scripts deps`. Subject in
 the imperative mood, lower case after the type, no trailing period, at
-most 72 characters. Prefer a bullet-point body, one bullet per discrete
+most 72 characters. Only the first word is held to lower case: an
+identifier keeps the spelling the code gives it, so `read Tctl rather
+than temp1` is right and `read tctl` is not. Prefer a bullet-point body, one bullet per discrete
 change or rationale, over prose. Breaking changes use `!` and a
 `BREAKING CHANGE:` footer.
 

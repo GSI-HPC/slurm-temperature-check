@@ -48,6 +48,14 @@ history rather than as a diff against a public release.
   distinct devices compose one name, which is how the selection defect
   above became reachable. ACPI devices are also spelled `-acpi-0` now
   rather than `-isa-0000`.
+- The shipped board table pinned a single chip on boards that have two.
+  `H11DSi-NT`, `H12DSi-N6` and `MZB3-PE0-000` named one `k10temp` PCI
+  function and `BC11SPSCA0` named `coretemp-isa-0000` with
+  `sensor = Package id 0`, so on a populated second socket that socket
+  was not watched at all: it could pass the limit while the guard kept
+  reporting `ok` off the other one, and `--check` agreed. All four now
+  use the driver prefix, which watches every socket and compares the
+  hottest of them.
 
 ## [0.10.0] - 2026-09-12
 

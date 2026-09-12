@@ -389,3 +389,49 @@ func TestSelect(t *testing.T) {
 		})
 	}
 }
+
+// TestSelectKeepsEveryDeviceOfAChip covers the case where two hwmon devices
+// compose to the same chip name, which happens whenever their parent sits on
+// a bus this package does not recognise and both fall back to
+// "<driver>-virtual-0". Selecting by driver prefix has to return both: the
+// guard compares the hottest of what it was given, so dropping one leaves the
+// device that is actually overheating unwatched, with no error to show for it.
+func TestSelectKeepsEveryDeviceOfAChip(t *testing.T) {
+	dir := build(t,
+		chip{name: "soc_dts", temps: map[int]temp{1: {reading: "42000"}}},
+		chip{name: "soc_dts", temps: map[int]temp{1: {reading: "99000"}}},
+	)
+	sensors, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(sensors) != 2 {
+		t.Fatalf("discovered %d sensors, want 2: %+v", len(sensors), sensors)
+	}
+	if sensors[0].Chip != sensors[1].Chip {
+		t.Fatalf("the fixture no longer composes one name for both devices: %q and %q",
+			sensors[0].Chip, sensors[1].Chip)
+	}
+
+	got, err := Select(sensors, "soc_dts", "")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("selected %d sensors, want both devices: %+v", len(got), got)
+	}
+
+	var hottest MilliCelsius
+	for _, s := range got {
+		v, err := s.Read()
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if v > hottest {
+			hottest = v
+		}
+	}
+	if hottest != 99000 {
+		t.Errorf("hottest selected reading = %s, want 99.000C", hottest)
+	}
+}

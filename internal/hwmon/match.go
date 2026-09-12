@@ -5,6 +5,7 @@ package hwmon
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -40,14 +41,24 @@ func Select(sensors []Sensor, chipRef, sensorRef string) ([]Sensor, error) {
 	}
 
 	if sensorRef == "" {
-		// Lowest-numbered attribute per chip. Discover() has already sorted
-		// by chip and then by index, so the first sensor seen for a chip is
-		// its lowest.
+		// Lowest-numbered attribute per hwmon device. Discover() has already
+		// sorted by chip and then by index, so the first sensor seen for a
+		// device is its lowest.
+		//
+		// The set is keyed by the device directory rather than by the
+		// composed chip name, because two devices can compose to the same
+		// name: the name is derived from the parent's bus address, and a
+		// driver whose parent sits on a bus this package does not recognise
+		// falls back to "<driver>-virtual-0" for every instance. Keying on
+		// the name would keep one of them and drop the rest, leaving a node
+		// whose second device is the hot one with no thermal guard on it and
+		// nothing in the log to say so.
 		var out []Sensor
 		seen := map[string]bool{}
 		for _, s := range onChip {
-			if !seen[s.Chip] {
-				seen[s.Chip] = true
+			dev := filepath.Dir(s.path)
+			if !seen[dev] {
+				seen[dev] = true
 				out = append(out, s)
 			}
 		}

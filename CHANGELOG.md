@@ -26,6 +26,19 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A board entry naming its chip by driver prefix watched only one hwmon
+  device per composed chip name. Two devices can compose to the same
+  name — the name is built from the parent's bus address, and a driver
+  whose parent sits on an unrecognised bus falls back to
+  `<driver>-virtual-0` for every instance — and the second was dropped
+  from the selection. Since the limit is compared against the hottest of
+  the *selected* sensors, a dropped device could sit above the limit
+  indefinitely without tripping, with nothing in the log and `--list`
+  and `--check` both looking healthy. Selection is now keyed on the
+  hwmon device.
+
 ## [0.10.0] - 2026-09-12
 
 First public release, and a reimplementation of the internal predecessor

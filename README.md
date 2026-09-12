@@ -61,9 +61,13 @@ spd5118-i2c-20-50   temp1   -      38.500C
 board    H12DSi-N6
 sensors  k10temp-pci-00cb/Tctl
 limit    85.000C
+source   k10temp-pci-00cb/Tctl
 reading  47.250C
 verdict  ok
 ```
+
+`source` is where the reading came from, which is the sensors unless the
+override file is present; see [Verifying it works](#verifying-it-works).
 
 `--check` exits 0 only when the node would be guarded. Once it does:
 
@@ -257,8 +261,14 @@ the board's limit drives the mechanism exactly as real heat would.
 # scontrol update NodeName=$(hostname -s) State=DRAIN Reason="temperature-check test"
 # echo 25 > /run/slurm-temperature-check/override    # a plausible reading: nothing happens
 # systemctl status slurm-temperature-check           # still active (running)
+   Status: "Watching /run/slurm-temperature-check/override, limit 85.000C"
+  ... WARN the override file is being read in place of the sensors reading=25.000C ...
 # echo 999 > /run/slurm-temperature-check/override   # over every limit
 ```
+
+Taking the override into use is logged and changes the status line, so a
+node left with one afterwards is visible rather than silently reporting a
+number somebody typed. `--check` names it as the `source` too.
 
 Within one interval:
 

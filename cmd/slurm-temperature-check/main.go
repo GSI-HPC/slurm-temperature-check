@@ -139,8 +139,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if res.HasReading {
 			reading = res.Reading.String()
 		}
-		fmt.Fprintf(stdout, "board    %s\nsensors  %s\nlimit    %s\nreading  %s\nverdict  %s\n",
-			g.Board, g.Sensors.Name(), g.Max, reading, res.Verdict)
+		// The source is printed separately from the sensors, because the two
+		// are not always the same thing: while the override file is present
+		// it is read in place of the hardware, and reporting only the sensors
+		// beside a reading that did not come from them is how a node with a
+		// forgotten override looks guarded.
+		fmt.Fprintf(stdout, "board    %s\nsensors  %s\nlimit    %s\nsource   %s\nreading  %s\nverdict  %s\n",
+			g.Board, g.Sensors.Name(), g.Max, res.Source, reading, res.Verdict)
 		if res.Err != nil {
 			fmt.Fprintf(stdout, "reason   %s\n", res.Err)
 		}
@@ -159,7 +164,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	notify := sdnotify.New()
-	watchdog(ctx, notify, g, log)
+	pass := watchdog(ctx, notify, g.Interval, log)
+	status := statusReporter(notify, g)
+	g.Observe = func(res guard.Result) {
+		pass()
+		status(res)
+	}
 	notify.Ready(fmt.Sprintf("Watching %s, limit %s", g.Sensors.Name(), g.Max))
 
 	if err := g.Run(ctx); err != nil {
@@ -211,24 +221,52 @@ func arm(o *options, sensors []hwmon.Sensor, log *slog.Logger) (*guard.Guard, er
 	}, nil
 }
 
+// statusReporter returns an observer that keeps the line `systemctl status`
+// shows in step with the loop.
+//
+// The line sent with READY= describes the guard as it was armed and nothing
+// updated it afterwards, so a node reading the override file went on
+// advertising its hwmon sensors for as long as it ran. It is deliberately
+// free of the reading itself, so that a datagram is sent when the state
+// changes rather than on every pass.
+func statusReporter(notify *sdnotify.Notifier, g *guard.Guard) func(guard.Result) {
+	last := ""
+	return func(res guard.Result) {
+		var line string
+		switch res.Verdict {
+		case guard.Disabled:
+			line = "Suspended: " + res.Source + " is present"
+		case guard.Tolerated:
+			line = "Reading " + res.Source + " failed, within the retry budget"
+		default:
+			line = fmt.Sprintf("Watching %s, limit %s", res.Source, g.Max)
+		}
+		if line == last {
+			return
+		}
+		last = line
+		notify.Status(line)
+	}
+}
+
 // watchdog wires the unit's WatchdogSec= to the progress of the check loop.
 //
 // The keep-alive is sent by a ticker of its own, but only while the loop has
 // completed a pass recently. A ping sent unconditionally would keep the
 // service alive through a wedged loop, which is the one thing the watchdog
-// exists to catch.
-func watchdog(ctx context.Context, notify *sdnotify.Notifier, g *guard.Guard, log *slog.Logger) {
+// exists to catch. The returned function is what the loop calls to record a
+// pass; it is a no-op when the unit sets no WatchdogSec=.
+func watchdog(ctx context.Context, notify *sdnotify.Notifier, interval time.Duration, log *slog.Logger) func() {
 	every := sdnotify.WatchdogInterval()
 	if every <= 0 {
-		return
+		return func() {}
 	}
 
 	var lastPass atomic.Int64
 	lastPass.Store(time.Now().UnixNano())
-	g.Observe = func(guard.Result) { lastPass.Store(time.Now().UnixNano()) }
 
 	// A pass is overdue once two intervals have gone by without one.
-	stale := 2 * g.Interval
+	stale := 2 * interval
 	if stale < 2*every {
 		stale = 2 * every
 	}
@@ -252,6 +290,8 @@ func watchdog(ctx context.Context, notify *sdnotify.Notifier, g *guard.Guard, lo
 			}
 		}
 	}()
+
+	return func() { lastPass.Store(time.Now().UnixNano()) }
 }
 
 func printSensors(w io.Writer, sensors []hwmon.Sensor) {

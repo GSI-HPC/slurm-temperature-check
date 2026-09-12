@@ -296,6 +296,13 @@ func TestOverrideStandsInForTheSensor(t *testing.T) {
 				t.Fatalf("override %q: exit = %d, want %d (stdout %s stderr %s)",
 					tc.content, code, tc.want, stdout, stderr)
 			}
+			// The reading did not come from the sensors, and saying so is
+			// the difference between "this node is guarded" and "this node
+			// is reporting a number somebody typed".
+			if !strings.Contains(stdout, "source   "+overridePath) {
+				t.Errorf("override %q: --check output does not name the override "+
+					"as the source:\n%s", tc.content, stdout)
+			}
 		})
 	}
 }

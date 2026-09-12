@@ -533,3 +533,58 @@ func TestOverrideAcceptsRealTemperatures(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceChangeIsReported covers the transition a verdict-only suppression
+// hid. While the override file is present it is read in place of the
+// hardware, and the verdict stays OK across that change, so nothing reached
+// the journal at all: a node left with an override after a test went on
+// reporting a number an operator once typed as though it were its
+// temperature, and said so nowhere.
+func TestSourceChangeIsReported(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "override")
+
+	var buf strings.Builder
+	g := &Guard{
+		Board:        "TESTBOARD",
+		Max:          hwmon.MilliCelsius(85000),
+		Sensors:      &fakeSource{reading: 42000},
+		OverridePath: override,
+		Log:          slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+	pass := func() string {
+		buf.Reset()
+		g.report(g.Check())
+		return buf.String()
+	}
+
+	if first := pass(); !strings.Contains(first, "checking resumed") {
+		t.Fatalf("the first pass logged %q, want it to report the verdict", first)
+	}
+	if second := pass(); second != "" {
+		t.Errorf("an unchanged pass logged %q, want silence", second)
+	}
+
+	if err := os.WriteFile(override, []byte("25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := pass()
+	if !strings.Contains(got, "the override file is being read in place of the sensors") {
+		t.Errorf("taking the override into use logged %q, want it named", got)
+	}
+	if !strings.Contains(got, "level=WARN") {
+		t.Errorf("logged %q, want a warning: an override in place is a state a node must not be left in", got)
+	}
+	if !strings.Contains(got, override) {
+		t.Errorf("logged %q, want the override path %q in it", got, override)
+	}
+	if repeat := pass(); repeat != "" {
+		t.Errorf("a second pass on the override logged %q, want it reported once", repeat)
+	}
+
+	if err := os.Remove(override); err != nil {
+		t.Fatal(err)
+	}
+	if back := pass(); !strings.Contains(back, "checking resumed") {
+		t.Errorf("returning to the sensors logged %q, want it reported", back)
+	}
+}

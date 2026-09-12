@@ -73,6 +73,18 @@ history rather than as a diff against a public release.
   its first pass and the emergency stop killed its jobs. NaN is now
   rejected, and this threshold rounds to millidegrees rather than
   truncating as well.
+- An override file taken into use was invisible. The journal suppressed
+  repeated identical verdicts by comparing the verdict alone, and the
+  verdict stays `ok` across the change from the sensors to the override,
+  so nothing was logged at `info`; `--check` printed the armed hwmon
+  sensors beside a reading that had not come from them; and the
+  `systemctl status` line, set once at startup, went on naming the
+  sensors. A node left with an override after a test therefore reported
+  a number an operator typed, for as long as the file was there, and
+  looked healthy from every angle. The source is now part of what
+  suppression compares, taking an override into use is logged at
+  `warn`, `--check` prints a `source` line, and the status line follows
+  the loop.
 
 ## [0.10.0] - 2026-09-12
 

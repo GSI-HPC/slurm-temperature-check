@@ -102,6 +102,10 @@ type Guard struct {
 	// second interval an "ok" per pass would be nine thousand journal
 	// entries a day and would bury the transitions that matter.
 	lastVerdict Verdict
+	// lastSource is the other half of that key. Where a reading came from
+	// is part of what the log line says, so a change of source has to
+	// defeat the suppression even when the verdict is unchanged.
+	lastSource string
 	// started guards the first log line, so the initial verdict is always
 	// reported even when it equals the zero value of lastVerdict.
 	started bool
@@ -200,7 +204,16 @@ func (g *Guard) Run(ctx context.Context) error {
 }
 
 // report logs a pass, quietly when nothing changed.
+//
+// "Nothing changed" covers where the reading came from as well as the
+// verdict. While the override file is present it is read in place of the
+// hardware, and that transition leaves the verdict at OK, so a suppression
+// keyed on the verdict alone said nothing at all: an override forgotten after
+// a test left the node reporting a number an operator once typed, for as long
+// as the file was there, with a clean journal.
 func (g *Guard) report(res Result) {
+	unchanged := g.started && res.Verdict == g.lastVerdict && res.Source == g.lastSource
+
 	switch res.Verdict {
 	case Trip:
 		g.Log.Error("guard tripped, the node must stop running jobs",
@@ -212,20 +225,30 @@ func (g *Guard) report(res Result) {
 			"source", res.Source, "failures", g.failures,
 			"read_retries", g.ReadRetries, "error", res.Err.Error())
 	case Disabled:
-		if g.started && g.lastVerdict == Disabled {
+		if unchanged {
 			break
 		}
 		g.Log.Warn("checking suspended: the disable file is present",
 			"path", res.Source)
 	case OK:
-		if g.started && g.lastVerdict == OK {
+		if unchanged {
 			g.Log.Debug("ok", "reading", res.Reading.String(), "source", res.Source)
+			break
+		}
+		// The override standing in for the hardware is a warning rather than
+		// information: it is the supported way to test the mechanism, and it
+		// is also the state a node must not be left in.
+		if g.OverridePath != "" && res.Source == g.OverridePath {
+			g.Log.Warn("the override file is being read in place of the sensors",
+				"reading", res.Reading.String(), "override_file", res.Source,
+				"sensors", g.Sensors.Name(), "limit", g.Max.String())
 			break
 		}
 		g.Log.Info("checking resumed", "reading", res.Reading.String(),
 			"source", res.Source, "limit", g.Max.String())
 	}
 	g.lastVerdict = res.Verdict
+	g.lastSource = res.Source
 	g.started = true
 }
 

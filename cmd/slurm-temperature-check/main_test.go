@@ -5,11 +5,31 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// flagValue pulls a value back out of the flags a node handed over, so a test
+// can point at the same fabricated tree without rebuilding the paths.
+func flagValue(args []string, name string) string {
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, name+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
 
 // node builds a fabricated sysfs tree plus a board table, and returns the
 // flags that point the program at it. It is the same shape the package's
@@ -347,4 +367,142 @@ func TestLogFormats(t *testing.T) {
 			t.Errorf("%s: stderr %q does not carry the error", format, stderr)
 		}
 	}
+}
+
+// TestDisableFileOutranksArming is row 13 of the specification table: the
+// disable file suspends checking whatever the sensors say, and "whatever the
+// sensors say" includes a node the guard cannot be armed for at all.
+//
+// It is the case where it matters most. Refusing to start exits with
+// exitConfig, which arms the emergency stop exactly as a trip does, so a node
+// that cannot arm used to kill its jobs on every start and every boot — and
+// the documented way to take a node out of the mechanism could not stop it,
+// because the file was only consulted once the guard was already running.
+func TestDisableFileOutranksArming(t *testing.T) {
+	tests := []struct {
+		desc string
+		node node
+	}{
+		{
+			desc: "the board is not in the table",
+			node: node{board: "UNKNOWNBOARD", chip: "k10temp", label: "Tctl",
+				reading: "42000", table: testTable},
+		},
+		{
+			desc: "the configured chip is not present on the node",
+			node: node{board: "TESTBOARD", chip: "coretemp", label: "Package id 0",
+				reading: "42000", table: testTable},
+		},
+		{
+			desc: "the board table does not parse",
+			node: node{board: "TESTBOARD", chip: "k10temp", label: "Tctl",
+				reading: "42000", table: "[TESTBOARD]\nchip = k10temp\n"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			args := tc.node.flags(t)
+			disablePath := flagValue(args, "--disable-file")
+
+			// Without the file the same node refuses to start, which is what
+			// rows 11 and 12 require.
+			if code, _, _ := exec(t, append(args, "--check")...); code != exitConfig {
+				t.Fatalf("exit = %d without the disable file, want %d", code, exitConfig)
+			}
+
+			if err := os.WriteFile(disablePath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := exec(t, append(args, "--check")...)
+			if code != exitOK {
+				t.Fatalf("exit = %d with the disable file, want %d (stdout %s stderr %s)",
+					code, exitOK, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "disabled") {
+				t.Errorf("stdout %q does not report the check as disabled", stdout)
+			}
+			// The reason is still worth having: it is what an operator has to
+			// fix before removing the file.
+			if !strings.Contains(stdout, "cannot arm") {
+				t.Errorf("stdout %q does not say why the guard could not arm", stdout)
+			}
+		})
+	}
+}
+
+// TestRearmWhenResumed covers the daemon half of row 13: a suspended node
+// that cannot arm has to stay up and try again when the file goes away,
+// rather than exit and take the jobs with it.
+func TestRearmWhenResumed(t *testing.T) {
+	n := node{board: "UNKNOWNBOARD", chip: "k10temp", label: "Tctl",
+		reading: "42000", table: testTable}
+	args := n.flags(t)
+	o := options{
+		configPath:   flagValue(args, "--config"),
+		hwmonPath:    flagValue(args, "--hwmon.path"),
+		boardPath:    flagValue(args, "--board-name-path"),
+		disablePath:  flagValue(args, "--disable-file"),
+		overridePath: flagValue(args, "--override-file"),
+		interval:     5 * time.Millisecond,
+		readRetries:  2,
+	}
+	why := errors.New("board \"UNKNOWNBOARD\" is not in the table")
+
+	if _, err := arm(&o, quietLogger()); err == nil {
+		t.Fatal("the fixture arms, so it cannot exercise a node that does not")
+	}
+	if err := os.WriteFile(o.disablePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("it waits while the file is there and arms once it is gone", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			// Put the node in a state it can be guarded in, then resume.
+			if err := os.WriteFile(o.boardPath, []byte("TESTBOARD\n"), 0o644); err != nil {
+				return
+			}
+			_ = os.Remove(o.disablePath)
+		}()
+
+		g, err := rearmWhenResumed(ctx, &o, nil, quietLogger(), why)
+		if err != nil {
+			t.Fatalf("rearmWhenResumed: %v", err)
+		}
+		if g.Board != "TESTBOARD" {
+			t.Errorf("armed for board %q, want TESTBOARD", g.Board)
+		}
+	})
+
+	t.Run("a stop while suspended is a clean stop", func(t *testing.T) {
+		if err := os.WriteFile(o.disablePath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		g, err := rearmWhenResumed(ctx, &o, nil, quietLogger(), why)
+		if g != nil {
+			t.Errorf("armed a guard for a cancelled context: %+v", g)
+		}
+		if !errors.Is(err, why) {
+			t.Errorf("error = %v, want the reason it could not arm", err)
+		}
+	})
+
+	t.Run("removing the file on a node that still cannot arm is fatal", func(t *testing.T) {
+		if err := os.WriteFile(o.boardPath, []byte("STILLUNKNOWN\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(o.disablePath); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := rearmWhenResumed(ctx, &o, nil, quietLogger(), why); err == nil {
+			t.Error("arming succeeded for a board that is still not in the table")
+		}
+	})
 }

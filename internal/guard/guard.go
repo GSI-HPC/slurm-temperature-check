@@ -136,13 +136,13 @@ var ErrTripped = errors.New("thermal guard tripped")
 // outranks everything, an override outranks the hardware, and only a reading
 // that was obtained and parsed is compared against the threshold.
 func (g *Guard) Check() Result {
-	if exists(g.DisablePath) {
+	if Present(g.DisablePath) {
 		g.failures = 0
 		return Result{Verdict: Disabled, Source: g.DisablePath}
 	}
 
 	src := g.Sensors
-	if exists(g.OverridePath) {
+	if Present(g.OverridePath) {
 		src = &fileSource{path: g.OverridePath}
 	}
 
@@ -252,7 +252,7 @@ func (g *Guard) report(res Result) {
 	g.started = true
 }
 
-// exists reports whether path can be stated. An empty path is never present,
+// Present reports whether path can be stated. An empty path is never present,
 // so leaving the disable or override path unset switches that feature off.
 //
 // Only a successful stat counts, which is what keeps the disable file failing
@@ -264,7 +264,7 @@ func (g *Guard) report(res Result) {
 // This does not weaken the "override present but unreadable" case. Stating a
 // file needs no permission on the file itself, so a mode 0000 override still
 // counts as present, and reading it then fails and spends the retry budget.
-func exists(path string) bool {
+func Present(path string) bool {
 	if path == "" {
 		return false
 	}

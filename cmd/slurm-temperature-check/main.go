@@ -113,27 +113,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitConfig
 	}
 
-	sensors, err := hwmon.Discover(o.hwmonPath)
-	if err != nil {
-		log.Error("cannot read the hwmon class", "error", err)
-		return exitConfig
-	}
 	if o.list {
+		sensors, err := hwmon.Discover(o.hwmonPath)
+		if err != nil {
+			log.Error("cannot read the hwmon class", "error", err)
+			return exitConfig
+		}
 		printSensors(stdout, sensors)
 		return exitOK
 	}
-	if len(sensors) == 0 {
-		log.Error("the node exports no temperature sensors at all", "path", o.hwmonPath)
-		return exitConfig
-	}
 
-	g, err := arm(&o, sensors, log)
-	if err != nil {
-		log.Error("cannot arm the guard", "error", err)
+	// The disable file outranks everything, including whether the guard can
+	// be armed at all. Specification row 1 says a node with the file present
+	// keeps running whatever its sensors say, and a node that cannot arm is
+	// where that matters most: exiting here arms the emergency stop exactly
+	// as a trip does, so treating an arming failure as fatal while checking
+	// is suspended kills the jobs on every start and every boot, and leaves
+	// the operator no lever that stops it.
+	g, armErr := arm(&o, log)
+	if armErr != nil && !guard.Present(o.disablePath) {
+		log.Error("cannot arm the guard", "error", armErr)
 		return exitConfig
 	}
 
 	if o.check {
+		if armErr != nil {
+			fmt.Fprintf(stdout, "disable  %s\nverdict  %s\nreason   checking is suspended; "+
+				"the guard cannot arm: %s\n", o.disablePath, guard.Disabled, armErr)
+			return exitOK
+		}
 		res := g.Check()
 		reading := "-"
 		if res.HasReading {
@@ -164,6 +172,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	notify := sdnotify.New()
+
+	if armErr != nil {
+		g, armErr = rearmWhenResumed(ctx, &o, notify, log, armErr)
+		if armErr != nil {
+			if ctx.Err() != nil {
+				log.Info("asked to stop while checking was suspended, exiting cleanly")
+				return exitOK
+			}
+			log.Error("cannot arm the guard", "error", armErr)
+			return exitConfig
+		}
+	}
+
 	pass := watchdog(ctx, notify, g.Interval, log)
 	status := statusReporter(notify, g)
 	g.Observe = func(res guard.Result) {
@@ -181,9 +202,56 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// arm resolves the configuration against this node and returns a guard whose
-// sensors have already been proven readable.
-func arm(o *options, sensors []hwmon.Sensor, log *slog.Logger) (*guard.Guard, error) {
+// rearmWhenResumed holds a node whose guard cannot arm but whose disable file
+// is present, and tries again once that file is removed.
+//
+// Returning the reason instead of the guard means checking is no longer
+// suspended and the node still cannot be guarded, at which point refusing to
+// run is correct again.
+func rearmWhenResumed(ctx context.Context, o *options, notify *sdnotify.Notifier,
+	log *slog.Logger, why error) (*guard.Guard, error) {
+	log.Warn("checking suspended: the disable file is present and the guard cannot arm",
+		"path", o.disablePath, "error", why)
+	notify.Ready("Suspended: " + o.disablePath + " is present; the guard cannot arm")
+
+	// This loop is what keeps the process alive, so it is also what the
+	// watchdog is watching; the keep-alive goes out at whichever of the two
+	// periods is the shorter.
+	every := o.interval
+	if w := sdnotify.WatchdogInterval(); w > 0 && w < every {
+		every = w
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, why
+		case <-t.C:
+		}
+		notify.Alive()
+		if guard.Present(o.disablePath) {
+			continue
+		}
+		g, err := arm(o, log)
+		if err != nil {
+			return nil, err
+		}
+		log.Info("the disable file is gone and the guard armed", "board", g.Board)
+		return g, nil
+	}
+}
+
+// arm resolves the configuration against this node and returns a guard.
+func arm(o *options, log *slog.Logger) (*guard.Guard, error) {
+	sensors, err := hwmon.Discover(o.hwmonPath)
+	if err != nil {
+		return nil, fmt.Errorf("read the hwmon class at %s: %w", o.hwmonPath, err)
+	}
+	if len(sensors) == 0 {
+		return nil, fmt.Errorf("the node exports no temperature sensors at all (%s)", o.hwmonPath)
+	}
 	cfg, err := config.Load(o.configPath)
 	if err != nil {
 		return nil, err

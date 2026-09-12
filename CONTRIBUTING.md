@@ -112,9 +112,10 @@ branch with an interactive rebase before requesting review; do not append
 
 `README.md`'s "Expected behaviour" table is the specification. Its first
 ten rows are `TestTruthTable` in `internal/guard/guard_test.go` row for
-row, and the last two are `TestCannotArm` in
+row, and the last three are `TestCannotArm`,
+`TestDisableFileOutranksArming` and `TestRearmWhenResumed` in
 `cmd/slurm-temperature-check/main_test.go`. A change to the table or to
-either test has to change both, in the same commit.
+any of those tests has to change both, in the same commit.
 
 Run the suite with `go test -race ./...`. The fixtures build fabricated
 sysfs trees in a temporary directory rather than committing captured

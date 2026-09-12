@@ -95,6 +95,15 @@ history rather than as a diff against a public release.
   failed, and fired `OnFailure=`, killing every job step on a node
   nobody had enrolled. The drop-in now carries `After=` only, which is
   the ordering it always documented.
+- The disable file was only consulted once the guard was already
+  running, so a node the guard could not arm for — a board missing from
+  the table, a sensor that had moved, a table that no longer parsed —
+  exited 2 and fired the emergency stop on every start and every boot,
+  and creating the disable file could not stop it. The file is now
+  tested before arming, as specification row 1 always said it was: while
+  it is present the guard waits, logs why it cannot arm, and arms itself
+  within one interval of the file being removed. A `systemctl stop` in
+  that state is still a clean stop.
 
 ## [0.10.0] - 2026-09-12
 

@@ -158,9 +158,11 @@ the emergency stop runs — the same path as any other failure.
 ### Expected behaviour
 
 The table below is the specification. Rows 1 to 10 are `TestTruthTable` in
-`internal/guard/guard_test.go`, row for row; rows 11 and 12 are
-`TestCannotArm` in `cmd/slurm-temperature-check/main_test.go`, because
-refusing to start is the command's decision rather than the loop's.
+`internal/guard/guard_test.go`, row for row; rows 11 to 13 are
+`TestCannotArm`, `TestDisableFileOutranksArming` and
+`TestRearmWhenResumed` in `cmd/slurm-temperature-check/main_test.go`,
+because refusing to start is the command's decision rather than the
+loop's.
 
 | # | Disable file | Override file | Sensors | Outcome |
 |---|---|---|---|---|
@@ -176,6 +178,15 @@ refusing to start is the command's decision rather than the loop's.
 | 10 | absent | absent | at or below the limit | keep running |
 | 11 | absent | absent | board not in the table | refuse to start |
 | 12 | absent | absent | configured chip or sensor absent | refuse to start |
+| 13 | present | any | anything rows 11 and 12 would refuse to start for | keep running, no reading taken |
+
+Row 13 is row 1 applied to a node that cannot be guarded at all. Refusing
+to start exits non-zero, which arms the emergency stop exactly as a trip
+does, so a node whose board is missing from the table would otherwise
+kill its jobs on every start and every reboot — and the disable file, the
+documented way to take a node out of the mechanism, could not stop it.
+While the file is present the guard waits instead, logs why it cannot
+arm, and arms itself within one interval of the file being removed.
 
 "Tolerate, then stop" is `--read-retries` consecutive failures absorbed
 and the next one fatal. At the default of two failures and a ten second

@@ -28,6 +28,17 @@ history rather than as a diff against a public release.
 
 ### Fixed
 
+- The shipped board table pinned a single DIMM on the Dell board.
+  `FRANMDCP07` named its sensor `spd5118-i2c-20-50`, a chip name in
+  full, and a populated DDR5 slot registers an SPD hub of its own, so
+  the hubs at `-20-51` and beyond were not selected at all. The limit is
+  compared against the hottest of the *selected* sensors, so any other
+  DIMM could sit above 60 °C indefinitely without tripping, with nothing
+  in the log and `--check` reporting `ok` off the one watched hub. The
+  entry now uses the driver prefix, as the dual-socket entries do, which
+  watches every hub and compares the hottest of them. It also stops the
+  entry depending on the i2c adapter number, which the kernel assigns at
+  probe time.
 - The commit-message lint rejected any subject holding a capital letter
   anywhere in it. `subject-case: [2, always, lower-case]` is satisfied
   only when the subject equals its own lower-cased form, so no subject

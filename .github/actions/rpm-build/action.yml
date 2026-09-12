@@ -50,6 +50,9 @@ runs:
         mkdir -p "$HOME/rpmbuild/SOURCES"
         git archive --format=tar.gz --prefix="slurm-temperature-check-${version}/" \
           -o "$HOME/rpmbuild/SOURCES/${base}" HEAD
+        # Source1: the sysusers file %pre reads at spec parse time, before
+        # %prep unpacks the tarball.
+        cp packaging/systemd/slurm-temperature-check.sysusers "$HOME/rpmbuild/SOURCES/"
         rpmbuild -bs "$spec"
 
     - name: Rebuild binary RPM with networking disabled
@@ -107,11 +110,13 @@ runs:
 
         # systemd-analyze verify exits 0 on an unknown directive (it only
         # warns), so its output is checked as well.
+        rc=0
         out="$(systemd-analyze verify --man=no \
                  /usr/lib/systemd/system/slurm-temperature-check.service \
-                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service 2>&1)"
+                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service 2>&1)" || rc=$?
         printf '%s\n' "$out"
         if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+        test "$rc" -eq 0
 
         # The slurmd drop-in against a stand-in for the slurmd unit, which is
         # not installed here. At debug level verify dumps the loaded unit,
@@ -123,8 +128,8 @@ runs:
         ExecStart=/usr/bin/true
         EOF
         out="$(cd /etc/systemd/system && SYSTEMD_LOG_LEVEL=debug \
-                 systemd-analyze verify --man=no slurmd.service 2>&1)"
-        if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
+                 systemd-analyze verify --man=no slurmd.service 2>&1)" || true
+        if grep -q 'Unknown key' <<<"$out"; then printf '%s\n' "$out"; exit 1; fi
         grep -q 'DropIn Path: /usr/lib/systemd/system/slurmd.service.d/temperature-check.conf' <<<"$out"
         grep -q 'slurm-temperature-check.service' <<<"$out"
         rm -f /etc/systemd/system/slurmd.service

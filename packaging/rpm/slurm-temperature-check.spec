@@ -31,6 +31,13 @@ Summary:        Stop SLURM jobs on a worker node that exceeds its temperature li
 License:        Apache-2.0
 URL:            %{gourl}
 Source0:        %{gosource}
+# The sysusers file is also in the tarball (packaging/systemd/), but %%pre has
+# to read it at spec parse time, before %%prep unpacks anything, so it is a
+# source of its own that the SRPM carries next to the tarball. A relative path
+# into the tree resolves against rpmbuild's working directory instead, which
+# silently leaves %%pre empty — and an empty %%pre means the service user is
+# never created and the unit cannot start.
+Source1:        %{name}.sysusers
 
 BuildRequires:  golang >= 1.23
 BuildRequires:  systemd-rpm-macros
@@ -75,7 +82,7 @@ install -D -m 0644 -vp packaging/systemd/%{name}-emergency-stop.service \
     %{buildroot}%{_unitdir}/%{name}-emergency-stop.service
 install -D -m 0644 -vp packaging/systemd/slurmd.service.d/temperature-check.conf \
     %{buildroot}%{_unitdir}/slurmd.service.d/temperature-check.conf
-install -D -m 0644 -vp packaging/systemd/%{name}.sysusers \
+install -D -m 0644 -vp %{SOURCE1} \
     %{buildroot}%{_sysusersdir}/%{name}.conf
 install -D -m 0644 -vp packaging/config/boards.conf \
     %{buildroot}%{_sysconfdir}/%{name}/boards.conf
@@ -91,7 +98,7 @@ export GOPROXY=off
 # EL10 still create the user through the generated scriptlet.
 %if 0%{?rhel}
 %pre
-%sysusers_create_compat packaging/systemd/%{name}.sysusers
+%sysusers_create_compat %{SOURCE1}
 %endif
 
 %post
@@ -109,9 +116,12 @@ export GOPROXY=off
 # that arms the emergency stop and kills the jobs on the node. An upgrade must
 # never be able to do that. The running guard therefore keeps the old binary
 # until someone restarts it deliberately, which on a drained node is
-# `systemctl restart %{name}`, and otherwise happens at the next reboot.
-%postun
-%systemd_postun %{name}.service
+# `systemctl restart slurm-temperature-check`, and otherwise happens at the
+# next reboot.
+#
+# There is no %%postun at all because %%systemd_postun expands to nothing on
+# every supported target: the daemon-reload it used to perform is done by the
+# systemd package's RPM file trigger at the end of the transaction.
 
 %files
 %license LICENSE NOTICE

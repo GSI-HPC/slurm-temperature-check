@@ -26,6 +26,27 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-13
+
+Two of these are cases where the guard kept a node in service while its
+temperature was not being watched at all. Nothing changes about the
+configuration format, the composed chip names, the flags or the meaning of
+an exit code, other than `--help` no longer reporting failure.
+
+**These fixes do not take effect when the package is upgraded.** `%postun`
+deliberately does not restart the guard, so a running guard keeps the old
+binary until someone restarts it on a drained node, or until the node next
+reboots. Plan that restart: until it happens, the node is still running the
+behaviour described below.
+
+**A Dell `FRANMDCP07` node watches every DIMM after that restart, not one.**
+An unmodified `boards.conf` is replaced by the packaged one and picks the
+correction up; a table edited on the node is kept as `%config(noreplace)`
+and goes on watching the single SPD hub it names. Where the packaged table
+does take effect, a DIMM that sat outside the old selection and is above
+60 °C trips the node on the first pass after the restart. That is the point
+of the fix, and it is better known before the restart than after it.
+
 ### Fixed
 
 - The shipped board table pinned a single DIMM on the Dell board.
@@ -333,6 +354,7 @@ new binary and has to be rewritten as a board table. Read
   time was replaced with the current time on every pass, so the documented
   "override present but too old" case could not occur.
 
-[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.11.1
 [0.11.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.11.0
 [0.10.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.10.0

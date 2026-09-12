@@ -6,7 +6,7 @@
 
 %global goipath         github.com/GSI-HPC/slurm-temperature-check
 %global gomodulesmode   GO111MODULE=on
-Version:                0.11.0
+Version:                0.11.1
 
 %gometa
 
@@ -137,6 +137,14 @@ export GOPROXY=off
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 
 %changelog
+* Sun Sep 13 2026 Dennis Klein <d.klein@gsi.de> - 0.11.1-1
+- Watch every DIMM on the Dell FRANMDCP07 entry of the shipped table; naming
+  the SPD hub in full pinned one DIMM and left the others unwatched
+- Confirm on every reading that the hwmon device behind a sensor is still the
+  chip that was selected, so a recycled hwmon index cannot substitute another
+  device's temperature for the watched one
+- Print the usage on stdout and exit 0 for --help, which reported failure
+
 * Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.11.0-1
 - Select every hwmon device of a driver, not one per composed chip name, so a
   second device of the same driver cannot go unwatched

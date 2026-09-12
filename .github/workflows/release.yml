@@ -58,11 +58,15 @@ jobs:
       - name: Release notes from CHANGELOG.md
         run: |
           # The body of the newest entry: from its "## [x.y.z]" heading up to
-          # the next "## [" heading or the link reference block.
+          # the next "## [" heading or the link reference block at the end of
+          # the file. That block is matched as a link *definition*,
+          # "[label]: url", and not as any line that merely starts with a
+          # bracket: an entry is free to begin a line with a markdown link,
+          # and stopping there would silently truncate the release notes.
           version="${GITHUB_REF_NAME#v}"
           awk -v ver="$version" '
             $0 ~ "^## \\[" ver "\\]" { on = 1; next }
-            on && (/^## \[/ || /^\[/) { exit }
+            on && (/^## \[/ || /^\[[^]]+\]:/) { exit }
             on { print }
           ' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || { echo "no CHANGELOG entry body for $version" >&2; exit 1; }

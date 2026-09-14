@@ -161,10 +161,24 @@ through the rpmlint policy check (`scripts/run-rpmlint.sh`), then
 installed, exercised end to end against a fabricated sysfs tree matching
 the shipped table's `TESTBOARD` entry, and removed again.
 
-What CI cannot do is heat up a mainboard. Any change to the guard, the
-units or the scriptlets therefore needs the README's
-[Verifying it works](README.md#verifying-it-works) procedure run on a
-real, drained node — including a reboot — and the commit body says so.
+What CI cannot do is heat up a mainboard, and a change to the guard, the
+units or the scriptlets is not proven until something has. That proof
+comes after the release rather than before the commit: what gets
+installed on a drained node is the RPM, so the verification necessarily
+follows the release that produces it. Build it, install it, put it
+through the README's [Verifying it works](README.md#verifying-it-works)
+procedure — both halves, including a reboot — and cut another release if
+the node finds something. Version numbers are cheap; a fault only a real
+node can find is not a reason to hold back the release that lets it be
+found.
+
+Keeping that procedure in step with the code is part of the change rather
+than part of the testing. A commit that alters what an operator would
+see — which units run, the exit statuses, the journal lines and status
+strings, the commands each response issues — updates
+[Verifying it works](README.md#verifying-it-works) in the same commit, so
+that whoever runs it against the next release is running the current
+one.
 
 ## Releases
 
@@ -174,13 +188,18 @@ the newest CHANGELOG entry agree, then builds and attaches the RPM, SRPM
 and `SHA256SUMS` to the GitHub release. Bump `Version:` and add the spec
 `%changelog` entry in the same commit as the CHANGELOG entry.
 
+A release is also how a change reaches a real node: it is installed on a
+drained one and put through
+[Verifying it works](README.md#verifying-it-works), as [Tests](#tests)
+describes, and what that finds goes into the release after it.
+
 Upgrades deliberately do not restart the guard: `%postun` uses
 `%systemd_postun` and not `%systemd_postun_with_restart`. A restart
 inside a transaction would stop a running guard, and any failure on the
 way back up — a board missing from a newly shipped table, a sensor that
 moved — would land in the failed state, which drains the node where the
 new guard cannot arm and kills its jobs where it armed and then tripped.
-An upgrade must never be able to do either on its own. A running guard therefore keeps
-the old binary until someone restarts it deliberately on a drained node,
-or until the next reboot. A release whose changes only take effect after
-such a restart says so in its CHANGELOG entry.
+An upgrade must never be able to do either on its own. A running guard
+therefore keeps the old binary until someone restarts it deliberately on
+a drained node, or until the next reboot. A release whose changes only
+take effect after such a restart says so in its CHANGELOG entry.

@@ -158,8 +158,9 @@ export GOPROXY=off
 - Choose between the two responses by the guard's exit status, in the
   ExecCondition= of each, so a failure that cannot be identified as an
   exit 2 still reaches the emergency stop
-- Install slurm-temperature-check-drain.service and the classifier it
-  shares with the emergency stop, %{_libexecdir}/%{name}/failure-kind
+- Install /usr/libexec/slurm-temperature-check/failure-kind, the
+  classifier both response units run as their ExecCondition=, and
+  slurm-temperature-check-drain.service
 - Title a GitHub release with the version number alone
 
 * Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.11.1-1

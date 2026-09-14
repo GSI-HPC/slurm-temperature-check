@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
-        run: shellcheck scripts/*.sh .githooks/commit-msg
+        run: shellcheck scripts/*.sh .githooks/commit-msg packaging/libexec/failure-kind
       - name: sysusers file
         run: |
           set -euo pipefail
@@ -69,6 +69,13 @@ jobs:
           sudo systemd-sysusers "$sysusers"
           getent passwd slurm-temp-check
           sudo install -m 0755 /usr/bin/true /usr/bin/slurm-temperature-check
+          # The same applies to the two paths the response units name. The
+          # classifier is installed for real, because it is the branch between
+          # them; scontrol only has to exist for the drain unit's ExecStart= to
+          # resolve, and a runner has no SLURM.
+          sudo install -D -m 0755 packaging/libexec/failure-kind \
+            /usr/libexec/slurm-temperature-check/failure-kind
+          sudo install -m 0755 /usr/bin/true /usr/bin/scontrol
       - name: Units and the slurmd drop-in
         run: |
           set -uo pipefail
@@ -80,7 +87,8 @@ jobs:
           rc=0
           out="$(systemd-analyze verify --man=no \
             slurm-temperature-check.service \
-            slurm-temperature-check-emergency-stop.service 2>&1)" || rc=$?
+            slurm-temperature-check-emergency-stop.service \
+            slurm-temperature-check-drain.service 2>&1)" || rc=$?
           printf '%s\n' "$out"
           if grep -q 'Unknown key' <<<"$out"; then
             echo "::error::a shipped unit carries a directive this systemd does not know"
@@ -110,6 +118,40 @@ jobs:
           fi
           grep -q 'DropIn Path: .*/slurmd.service.d/temperature-check.conf' <<<"$out"
           grep -q 'slurm-temperature-check.service' <<<"$out"
+      - name: Which failure goes to which unit
+        run: |
+          set -euo pipefail
+          # The classifier is the whole of the branch between killing a node's
+          # job steps and draining it, and it is wrong in both directions: a
+          # trip read as "never armed" leaves a node running jobs above its
+          # limit, and an arming failure read as a trip kills the jobs on a
+          # node whose board is only missing from the table.
+          s=packaging/libexec/failure-kind
+          expect() { # expect <wanted-status> <argument> <MONITOR_EXIT_CODE> <MONITOR_EXIT_STATUS>
+            local rc=0
+            MONITOR_EXIT_CODE="$3" MONITOR_EXIT_STATUS="$4" "$s" "$2" >/dev/null || rc=$?
+            if [ "$rc" -ne "$1" ]; then
+              echo "::error::$s $2 exited $rc for '$3 $4', want $1"
+              exit 1
+            fi
+          }
+          expect 0 unarmed exited 2       # never armed: the drain unit's
+          expect 1 armed   exited 2
+          expect 0 armed   exited 1       # tripped: the emergency stop's
+          expect 1 unarmed exited 1
+          expect 0 armed   killed KILL    # the watchdog, likewise
+          expect 1 unarmed killed KILL
+          expect 0 armed   killed 2       # SIGINT is signal 2, not an exit 2
+          expect 1 unarmed killed 2
+          # An exit status systemd did not report, and that asking systemd for
+          # it did not turn up either, keeps the emergency stop.
+          env -u MONITOR_EXIT_CODE -u MONITOR_EXIT_STATUS "$s" armed
+          # A shipped unit and the script disagreeing about the argument is a
+          # packaging error: 255 is the one status that fails the unit rather
+          # than skipping it.
+          rc=0; "$s" bogus >/dev/null 2>&1 || rc=$?
+          [ "$rc" -eq 255 ]
+
       - name: Guard hardening score
         run: |
           # --threshold= takes the 0-100 scale behind the printed exposure

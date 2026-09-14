@@ -109,6 +109,8 @@ runs:
         for f in /usr/bin/slurm-temperature-check \
                  /usr/lib/systemd/system/slurm-temperature-check.service \
                  /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service \
+                 /usr/lib/systemd/system/slurm-temperature-check-drain.service \
+                 /usr/libexec/slurm-temperature-check/failure-kind \
                  /usr/lib/systemd/system/slurmd.service.d/temperature-check.conf \
                  /usr/lib/sysusers.d/slurm-temperature-check.conf \
                  /etc/slurm-temperature-check/boards.conf \
@@ -117,12 +119,18 @@ runs:
         done
 
         # systemd-analyze verify exits 0 on an unknown directive (it only
-        # warns), so its output is checked as well.
+        # warns), so its output is checked as well. It does treat an ExecStart=
+        # that does not exist as an error, and the drain unit names scontrol,
+        # which a container with no SLURM in it has not got: a stand-in stands
+        # where the unit expects one and goes away again afterwards.
+        install -m 0755 /usr/bin/true /usr/bin/scontrol
         rc=0
         out="$(systemd-analyze verify --man=no \
                  /usr/lib/systemd/system/slurm-temperature-check.service \
-                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service 2>&1)" || rc=$?
+                 /usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service \
+                 /usr/lib/systemd/system/slurm-temperature-check-drain.service 2>&1)" || rc=$?
         printf '%s\n' "$out"
+        rm -f /usr/bin/scontrol
         if grep -q 'Unknown key' <<<"$out"; then exit 1; fi
         test "$rc" -eq 0
 
@@ -209,6 +217,18 @@ runs:
         rc=0; check || rc=$?
         test "$rc" -eq 2
 
+        # That exit status is what the two response units branch on, so the
+        # installed classifier is asked about it here as well. The runner job
+        # covers the same cases against /bin/sh as Ubuntu spells it; this one
+        # is the shipped file, on the target's own /bin/sh.
+        fk=/usr/libexec/slurm-temperature-check/failure-kind
+        MONITOR_EXIT_CODE=exited MONITOR_EXIT_STATUS=2 "$fk" unarmed
+        rc=0; MONITOR_EXIT_CODE=exited MONITOR_EXIT_STATUS=2 "$fk" armed || rc=$?
+        test "$rc" -eq 1
+        MONITOR_EXIT_CODE=exited MONITOR_EXIT_STATUS=1 "$fk" armed
+        rc=0; MONITOR_EXIT_CODE=exited MONITOR_EXIT_STATUS=1 "$fk" unarmed || rc=$?
+        test "$rc" -eq 1
+
         # rpm -e rather than dnf: the option that stops dnf from taking the
         # package's dependencies (systemd) out with it is spelled
         # --noautoremove on dnf4 and --no-autoremove on current dnf5, and
@@ -218,6 +238,8 @@ runs:
         rpm -e slurm-temperature-check
         test ! -e /usr/bin/slurm-temperature-check
         test ! -e /usr/lib/systemd/system/slurm-temperature-check.service
+        test ! -e /usr/lib/systemd/system/slurm-temperature-check-drain.service
+        test ! -e /usr/libexec/slurm-temperature-check
         test ! -e /usr/lib/systemd/system/slurmd.service.d
         # %config(noreplace) files are kept as .rpmsave only when modified;
         # unmodified ones go away with the package.

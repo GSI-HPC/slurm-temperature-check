@@ -6,7 +6,7 @@
 
 %global goipath         github.com/GSI-HPC/slurm-temperature-check
 %global gomodulesmode   GO111MODULE=on
-Version:                0.11.1
+Version:                0.12.0
 
 %gometa
 
@@ -151,6 +151,17 @@ export GOPROXY=off
 %config(noreplace) %{_sysconfdir}/sysconfig/%{name}
 
 %changelog
+* Mon Sep 14 2026 Dennis Klein <d.klein@gsi.de> - 0.12.0-1
+- Drain a node whose guard never armed rather than killing its job steps:
+  an unknown board, an absent chip, a table that does not parse or a bad
+  flag now costs the node new work and not the work already running on it
+- Choose between the two responses by the guard's exit status, in the
+  ExecCondition= of each, so a failure that cannot be identified as an
+  exit 2 still reaches the emergency stop
+- Install slurm-temperature-check-drain.service and the classifier it
+  shares with the emergency stop, %{_libexecdir}/%{name}/failure-kind
+- Title a GitHub release with the version number alone
+
 * Sat Sep 12 2026 Dennis Klein <d.klein@gsi.de> - 0.11.1-1
 - Watch every DIMM on the Dell FRANMDCP07 entry of the shipped table; naming
   the SPD hub in full pinned one DIMM and left the others unwatched

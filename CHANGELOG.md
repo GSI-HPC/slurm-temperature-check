@@ -26,6 +26,36 @@ history rather than as a diff against a public release.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-14
+
+A node that cannot be guarded no longer loses the work that was running on
+it. What changed is the units: the guard's exit statuses already said which
+kind of failure had happened, and nothing about the configuration format,
+the composed chip names, the flags or the meaning of an exit code changes
+here.
+
+**This release does take effect when the package is upgraded**, unlike the
+fixes in 0.11.1. Which response a failure gets is decided by the units,
+which systemd re-reads in the transaction's `daemon-reload`, and the exit
+statuses a running guard already returns are what they branch on. The guard
+binary is still not restarted by `%postun`, so anything that needs the new
+binary — the 0.11.1 fixes, on a node that has not been restarted since —
+goes on waiting for that restart.
+
+**A node whose guard cannot arm is drained from now on, not emptied.** The
+job steps are left to finish and `slurmd` is left running, so a board
+missing from `boards.conf` costs the node its share of new work rather than
+the work already on it. The drain is not undone when the board is added and
+the guard arms: `scontrol update NodeName=$(hostname -s) State=RESUME` is
+the operator's to run.
+
+**Delivering a drain needs `scontrol` in `/usr/bin` and a route to
+`slurmctld`.** Neither is a package dependency. A node without SLURM skips
+the drain unit, having nothing to take out of service; a site whose
+`NodeName` is not the node's short hostname overrides
+`slurm-temperature-check-drain.service` with `systemctl edit`, or its
+drains land in the failed state with the node unguarded and in service.
+
 ### Changed
 
 - A guard that never armed no longer kills the node's job steps. The exit
@@ -405,7 +435,8 @@ new binary and has to be rewritten as a board table. Read
   time was replaced with the current time on every pass, so the documented
   "override present but too old" case could not occur.
 
-[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/GSI-HPC/slurm-temperature-check/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.12.0
 [0.11.1]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.11.1
 [0.11.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.11.0
 [0.10.0]: https://github.com/GSI-HPC/slurm-temperature-check/releases/tag/v0.10.0

@@ -6,7 +6,8 @@
 // mainboard.
 //
 // It does nothing privileged. It reads sysfs, and it exits non-zero when the
-// node must stop; the unit's OnFailure= turns that into the emergency stop.
+// node must stop; the unit's OnFailure= turns that into the emergency stop, or,
+// for a guard that never armed, into a drain.
 package main
 
 import (
@@ -34,13 +35,20 @@ import (
 // version is set at build time with -X main.version=...
 var version = "devel"
 
-// Exit codes. Every non-zero code arms the emergency stop, because every one
-// of them means the node's temperature is no longer being watched. The codes
-// are distinguished so the journal says which kind of failure it was.
+// Exit codes. Every non-zero code takes the node out of service, because every
+// one of them means the node's temperature is no longer being watched, and
+// which code it is decides how far that goes: the unit's OnFailure= turns exit
+// 1 into the emergency stop, which kills the running job steps, and exit 2 into
+// a drain, which leaves them alone.
+//
+// That split holds only while exit 2 means the guard never took a reading, so
+// nothing may return exitConfig once the check loop is running and nothing may
+// return exitTripped before it starts. TestExitCodeSeparatesArmingFromTripping
+// is where that is held to.
 const (
 	exitOK      = 0 // asked to stop, or a one-shot mode succeeded
 	exitTripped = 1 // the guard tripped: over the limit, or no reading
-	exitConfig  = 2 // could not arm at all: bad configuration or unknown board
+	exitConfig  = 2 // never armed: bad configuration or unknown board
 )
 
 type options struct {
@@ -146,10 +154,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// The disable file outranks everything, including whether the guard can
 	// be armed at all. Specification row 1 says a node with the file present
 	// keeps running whatever its sensors say, and a node that cannot arm is
-	// where that matters most: exiting here arms the emergency stop exactly
-	// as a trip does, so treating an arming failure as fatal while checking
-	// is suspended kills the jobs on every start and every boot, and leaves
-	// the operator no lever that stops it.
+	// where that matters most: exiting here fails the unit exactly as a trip
+	// does, so treating an arming failure as fatal while checking is suspended
+	// drains the node on every start and every boot, and leaves the operator
+	// no lever that stops it.
 	g, armErr := arm(&o, log)
 	if armErr != nil && !guard.Present(o.disablePath) {
 		log.Error("cannot arm the guard", "error", armErr)

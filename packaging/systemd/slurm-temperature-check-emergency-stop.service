@@ -1,9 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
 #
-# Started by systemd through OnFailure= when the guard fails. It is the only
-# privileged part of the package, and it is reachable only along that one
-# edge: it has no [Install] section, so nothing else pulls it in.
+# Started by systemd through OnFailure= when the guard fails while the node was
+# being watched: a reading over the limit, a sensor that stopped answering, a
+# check loop that stopped turning, a signal. It is reachable along that one edge
+# and no other -- it has no [Install] section, so nothing else pulls it in.
+#
+# It is not reached by every failure. A guard that exits 2 never took a reading
+# at all, and killing a node's jobs over a board that is missing from the table
+# answers a deployment mistake with the response reserved for a node that is too
+# hot; slurm-temperature-check-drain.service takes that one, and the
+# ExecCondition= below is what tells the two apart.
 #
 # The order of the three commands matters.
 #
@@ -37,12 +44,20 @@ Before=shutdown.target
 
 [Service]
 Type=oneshot
+
+# Which of the two responses this failure calls for. Exit 1 from the script
+# skips the unit without failing it, which is how a guard that exited 2 leaves
+# the job steps on this node alone.
+ExecCondition=/usr/libexec/slurm-temperature-check/failure-kind armed
+
 ExecStart=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all slurmstepd.scope
 ExecStart=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all slurmd.service
 ExecStart=/usr/bin/systemctl stop slurmd.service
 
 # Hardening. Talking to systemd needs the private D-Bus socket and nothing
 # else: no network, no devices, no capabilities of its own beyond being root.
+# The drain unit is the package's other privileged unit and has to keep less of
+# this, because slurmctld is across the network from it.
 NoNewPrivileges=yes
 PrivateNetwork=yes
 PrivateDevices=yes

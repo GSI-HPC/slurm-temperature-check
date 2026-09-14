@@ -1,0 +1,74 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
+#
+# Classifies a failure of slurm-temperature-check.service so that the two
+# units its OnFailure= starts can each decide whether the failure is theirs.
+# It is the ExecCondition= of both, and it is the whole of the branch: it
+# holds no privilege, reads no configuration, kills nothing and does nothing
+# but exit.
+#
+#   armed    exit 0 when the guard failed while it was watching the sensors
+#   unarmed  exit 0 when the guard exited without ever taking a reading
+#
+# The guard's exit codes make the two distinguishable. Exit 2 is returned only
+# before a single reading has been taken -- a board that is not in the table, a
+# chip that is not present, a table that does not parse, a bad flag in
+# OPTIONS= -- and never once the check loop is running, where the only failure
+# is exit 1. Exit 2 is therefore a node that was never guarded, which is the
+# one failure that withdraws no promise: nothing about the guard failing to
+# start changed the node's temperature, and killing the jobs that were already
+# running would answer a deployment mistake with the response reserved for a
+# node that is too hot.
+#
+# Every other ending -- exit 1, a signal, the watchdog, a systemd protocol
+# error, an exit status this cannot read at all -- is "armed", because the node
+# was being watched and is not any more. Only a positively identified exit 2
+# takes the gentler path; anything unrecognised keeps the emergency stop.
+
+set -eu
+
+unit=slurm-temperature-check.service
+
+# systemd sets MONITOR_* in the Type=oneshot units it starts through OnFailure=
+# (v249 and later; EL9 ships 252). Asking systemd for the same two values is
+# the fallback, both for an older release and for a run by hand.
+code=${MONITOR_EXIT_CODE:-}
+status=${MONITOR_EXIT_STATUS:-}
+if [ -z "$code" ]; then
+	code=$(/usr/bin/systemctl show --property=ExecMainCode --value "$unit" 2>/dev/null) || code=
+	status=$(/usr/bin/systemctl show --property=ExecMainStatus --value "$unit" 2>/dev/null) || status=
+	# ExecMainCode is the raw siginfo si_code -- 1 is CLD_EXITED, 2 CLD_KILLED,
+	# 3 CLD_DUMPED, 0 "has not exited yet" -- where MONITOR_EXIT_CODE spells
+	# the same thing out. Distinguishing them matters: a process killed by
+	# SIGINT reports status 2 as well, and that is not an exit status of 2.
+	case $code in
+	1) code=exited ;;
+	2) code=killed ;;
+	3) code=dumped ;;
+	*) code= ;;
+	esac
+fi
+
+kind=armed
+if [ "$code" = exited ] && [ "$status" = 2 ]; then
+	kind=unarmed
+fi
+
+case ${1:-} in
+unarmed)
+	[ "$kind" = unarmed ] || exit 1
+	echo "$unit exited 2 without ever taking a reading: draining this node, its running job steps are left alone"
+	;;
+armed)
+	[ "$kind" = armed ] || exit 1
+	echo "$unit failed while the node was being watched (${code:-reason unknown}${status:+ $status}): killing the job steps and stopping slurmd"
+	;;
+*)
+	# 255 is the one status systemd reads as a failure of the unit rather than
+	# as a condition that was not met, and a shipped unit disagreeing with this
+	# script about its own arguments is exactly that.
+	echo "usage: ${0##*/} armed|unarmed" >&2
+	exit 255
+	;;
+esac

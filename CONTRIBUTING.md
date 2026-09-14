@@ -18,15 +18,25 @@ the board name as the kernel reports it, the `slurm-temperature-check
 
 Two properties are load-bearing and changes have to keep them:
 
-- **Every failure is a stop.** An unreadable sensor, an unparseable
-  reading, an unknown board and a wedged check loop all end with the node
-  out of service. A change that makes any of them keep the node in service
-  needs to argue why a temperature that is not known is safe.
+- **Every failure takes the node out of service, and how far follows what
+  the node was promised.** An unreadable sensor, an unparseable reading
+  and a wedged check loop end with the job steps killed, because the node
+  was being watched and is not any more. An unknown board, an absent
+  chip, a table that does not parse and a bad flag end with the node
+  drained and the jobs already running on it left to finish, because the
+  guard never took a reading and its failing to start changed nothing
+  about the node's temperature. A change that makes any failure keep the
+  node in service needs to argue why a temperature that is not known is
+  safe; a change that moves a failure from the second response to the
+  first needs to say what promise it withdrew.
 - **The guard holds no privilege.** It reads world-readable sysfs and
   exits with a status. Everything that can kill a process lives in
-  `slurm-temperature-check-emergency-stop.service`, whose commands are
-  fixed in the unit file and take no input from the configuration, the
-  sensors or anything else.
+  `slurm-temperature-check-emergency-stop.service` and everything that
+  can change the node's state in SLURM lives in
+  `slurm-temperature-check-drain.service`; the commands of both are fixed
+  in the unit files and take no input from the configuration, the sensors
+  or anything else. Which of the two runs is decided from a single input,
+  the guard unit's exit status as systemd reports it.
 
 ## No dependencies
 
@@ -119,6 +129,13 @@ row, and the last three are `TestCannotArm`,
 `cmd/slurm-temperature-check/main_test.go`. A change to the table or to
 any of those tests has to change both, in the same commit.
 
+Which of the two responses a failure gets is decided by the exit status
+alone, which makes the exit statuses a specification of their own:
+`TestExitCodeSeparatesArmingFromTripping` holds exit 2 to "never took a
+reading" and exit 1 to everything after that, and CI exercises the
+shipped classifier case by case in its "Which failure goes to which unit"
+step. A change to either side needs the other.
+
 Run the suite with `go test -race ./...`. The fixtures build fabricated
 sysfs trees in a temporary directory rather than committing captured
 ones, because none of the boards in the table are available to capture
@@ -130,11 +147,12 @@ tests and not only the package build.
 
 CI additionally runs `gofmt`, `go vet`, golangci-lint and, over the
 shipped files, `shellcheck`, `systemd-sysusers --dry-run`,
-`systemd-analyze verify` of both units and the `slurmd` drop-in (against
-a stand-in `slurmd.service`), and `systemd-analyze security` with a
-threshold on the guard. The emergency stop is deliberately not scored: it
-has to run as root and reach systemd's private bus, which caps what its
-score can be, so its hardening is reviewed by reading the unit.
+`systemd-analyze verify` of all three units and the `slurmd` drop-in
+(against a stand-in `slurmd.service`), and `systemd-analyze security`
+with a threshold on the guard. The emergency stop and the drain are
+deliberately not scored: they have to run as root and reach systemd's
+private bus, and the drain the network besides, which caps what their
+scores can be, so their hardening is reviewed by reading the units.
 
 The RPM is built in a Rocky 9 container (required) and in Rocky 10 and
 Fedora (advisory), rebuilt from its SRPM inside a network namespace with
@@ -160,8 +178,9 @@ Upgrades deliberately do not restart the guard: `%postun` uses
 `%systemd_postun` and not `%systemd_postun_with_restart`. A restart
 inside a transaction would stop a running guard, and any failure on the
 way back up — a board missing from a newly shipped table, a sensor that
-moved — would land in the failed state that kills the jobs on the node.
-An upgrade must never be able to do that. A running guard therefore keeps
+moved — would land in the failed state, which drains the node where the
+new guard cannot arm and kills its jobs where it armed and then tripped.
+An upgrade must never be able to do either on its own. A running guard therefore keeps
 the old binary until someone restarts it deliberately on a drained node,
 or until the next reboot. A release whose changes only take effect after
 such a restart says so in its CHANGELOG entry.

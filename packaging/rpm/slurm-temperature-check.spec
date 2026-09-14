@@ -19,10 +19,13 @@ exit into a separate, privileged unit that kills the running job steps and
 stops slurmd.
 
 Thresholds and the sensor to watch are per mainboard, matched on the DMI board
-name, in /etc/slurm-temperature-check/boards.conf. Every failure mode is a
-stop: an unreadable sensor, an unparseable reading, a board that is not in the
-table and a check loop that stops turning all end with the node out of
-service, because a temperature that is not known is not known to be safe.}
+name, in /etc/slurm-temperature-check/boards.conf. Every failure takes the node
+out of service, because a temperature that is not known is not known to be
+safe, and the response follows what the node was promised: an unreadable
+sensor, an unparseable reading and a check loop that stops turning kill the job
+steps and stop slurmd, while a guard that never armed at all -- a board that is
+not in the table, a chip that is not present -- drains the node and leaves the
+jobs already running on it alone.}
 
 Name:           slurm-temperature-check
 Release:        1%{?dist}
@@ -50,15 +53,18 @@ BuildRequires:  go-rpm-macros
 BuildRequires:  go-rpm-macros-epel
 %endif
 
-# The emergency stop is three systemctl calls, and the guard is a notify-type
-# unit with a watchdog. Nothing else is needed at run time: the readings come
-# from sysfs rather than from lm_sensors, and there is no interpreter.
+# The emergency stop is three systemctl calls, the drain is one scontrol call,
+# and the guard is a notify-type unit with a watchdog. The only interpreter is
+# /bin/sh, for the handful of lines that decide which of those two a failure
+# calls for; rpm picks that dependency up by itself. Nothing else is needed at
+# run time, because the readings come from sysfs rather than from lm_sensors.
 Requires:       systemd
 
 # slurm is deliberately not a dependency. The package installs cleanly on a
-# node without it (the drop-in is inert and the emergency stop's kills are
-# prefixed with "-"), which is what lets a node be prepared before slurmd is
-# rolled out to it.
+# node without it -- the drop-in is inert, the emergency stop's kills are
+# prefixed with "-", and the drain unit's ConditionFileIsExecutable= on
+# scontrol skips it rather than failing it -- which is what lets a node be
+# prepared before slurmd is rolled out to it.
 
 %description %{common_description}
 
@@ -80,6 +86,10 @@ install -D -m 0644 -vp packaging/systemd/%{name}.service \
     %{buildroot}%{_unitdir}/%{name}.service
 install -D -m 0644 -vp packaging/systemd/%{name}-emergency-stop.service \
     %{buildroot}%{_unitdir}/%{name}-emergency-stop.service
+install -D -m 0644 -vp packaging/systemd/%{name}-drain.service \
+    %{buildroot}%{_unitdir}/%{name}-drain.service
+install -D -m 0755 -vp packaging/libexec/failure-kind \
+    %{buildroot}%{_libexecdir}/%{name}/failure-kind
 install -D -m 0644 -vp packaging/systemd/slurmd.service.d/temperature-check.conf \
     %{buildroot}%{_unitdir}/slurmd.service.d/temperature-check.conf
 install -D -m 0644 -vp %{SOURCE1} \
@@ -112,9 +122,10 @@ export GOPROXY=off
 # Restarting the guard as part of a transaction would stop a running guard,
 # and a stop of the guard is indistinguishable to systemd from the guard
 # having finished; worse, any failure on the way back up — a board that is not
-# in a newly shipped table, a sensor that moved — lands in the failed state
-# that arms the emergency stop and kills the jobs on the node. An upgrade must
-# never be able to do that. The running guard therefore keeps the old binary
+# in a newly shipped table, a sensor that moved — lands in the failed state,
+# which drains the node where the new guard cannot arm and kills its jobs where
+# it armed and then tripped. An upgrade must never be able to do either on its
+# own. The running guard therefore keeps the old binary
 # until someone restarts it deliberately, which on a drained node is
 # `systemctl restart slurm-temperature-check`, and otherwise happens at the
 # next reboot.
@@ -129,6 +140,9 @@ export GOPROXY=off
 %{_bindir}/%{name}
 %{_unitdir}/%{name}.service
 %{_unitdir}/%{name}-emergency-stop.service
+%{_unitdir}/%{name}-drain.service
+%dir %{_libexecdir}/%{name}
+%{_libexecdir}/%{name}/failure-kind
 %dir %{_unitdir}/slurmd.service.d
 %{_unitdir}/slurmd.service.d/temperature-check.conf
 %{_sysusersdir}/%{name}.conf

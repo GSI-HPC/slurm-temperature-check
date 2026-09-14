@@ -28,6 +28,49 @@ history rather than as a diff against a public release.
 
 ### Changed
 
+- A guard that never armed no longer kills the node's job steps. The exit
+  status already said which of the two kinds of failure had happened —
+  exit 2 is returned only before a single reading has been taken and exit
+  1 only after — but `OnFailure=` named one unit and every failure ran it,
+  so a board missing from `boards.conf`, a chip that had moved, a table
+  that did not parse or a typo in `OPTIONS=` killed every job step on the
+  node and stopped `slurmd`. That is the response reserved for a node that
+  is too hot, spent on a node whose temperature nobody had been watching
+  in the first place and which starting the guard had not made any hotter;
+  it is also correlated across a fleet, where a thermal trip is not, so
+  one bad table plus a rollout that restarts units was every node killing
+  its jobs at once.
+
+  The guard now names two units in `OnFailure=`.
+  `slurm-temperature-check-emergency-stop.service` is unchanged and keeps
+  every failure that happened while the node was being watched: a reading
+  over the limit, a sensor that stopped answering, a check loop that
+  stopped turning, a signal. `slurm-temperature-check-drain.service`
+  drains the node for a guard that exited 2, which leaves the jobs already
+  running on it to finish and stops the scheduler sending it more. Both
+  are started for every failure, because `OnFailure=` cannot branch on an
+  exit status, and each one's `ExecCondition=` asks the new
+  `/usr/libexec/slurm-temperature-check/failure-kind` whether the failure
+  is its own. Anything that cannot be positively identified as an exit 2
+  belongs to the emergency stop, so an exit status systemd does not report
+  is a kill and never a silent nothing. Rows 11 and 12 of the
+  specification table now read "refuse to start, drain the node".
+
+  The drain is deliberately not undone when the board is added and the
+  guard arms. A node can be drained for reasons that are none of this
+  package's business, so an operator resumes it: `scontrol update
+  NodeName=$(hostname -s) State=RESUME`. Where the drain cannot be
+  delivered the unit is skipped — a node with no `scontrol` in `/usr/bin`
+  has nothing to drain — or lands in the failed state, and nothing else is
+  attempted: stopping `slurmd` instead would have `slurmctld` mark the
+  node DOWN after `SlurmdTimeout` and kill the jobs anyway, five minutes
+  later.
+
+  Unlike the fixes in 0.11.1 this takes effect when the package is
+  upgraded, without restarting the guard. What changed is the units, which
+  systemd re-reads in the transaction's `daemon-reload`, and the exit
+  statuses a running guard already returns are what they branch on.
+
 - A GitHub release is titled with its version number alone, `0.11.1`,
   rather than `slurm-temperature-check v0.11.1`. The page names the
   repository above the title and the tag beside it either way, so the

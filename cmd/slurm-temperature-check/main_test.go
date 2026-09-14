@@ -232,8 +232,8 @@ func TestCheck(t *testing.T) {
 }
 
 // TestCannotArm covers everything that stops the guard from starting at all.
-// Each of these exits with exitConfig, which arms the emergency stop, so each
-// one has to be a real misconfiguration rather than a transient.
+// Each of these exits with exitConfig, which drains the node, so each one has
+// to be a real misconfiguration rather than a transient.
 func TestCannotArm(t *testing.T) {
 	tests := []struct {
 		desc string
@@ -293,6 +293,53 @@ func TestCannotArm(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestExitCodeSeparatesArmingFromTripping pins the property the guard's two
+// OnFailure= units branch on. Exit 2 means the guard never took a reading and
+// exit 1 means it took one it could not live with, so the emergency stop kills
+// the node's job steps for the second while the drain unit leaves them alone
+// for the first. A path that returned exitConfig once the check loop was
+// running would leave a node that is over its limit running its jobs, and one
+// that returned exitTripped before arming would kill the jobs on a node whose
+// board is merely missing from the table.
+//
+// These run the service mode rather than --check, because the exit status
+// systemd sees is the one the branch is taken on.
+func TestExitCodeSeparatesArmingFromTripping(t *testing.T) {
+	t.Run("a guard that cannot arm exits before the loop", func(t *testing.T) {
+		n := node{board: "UNKNOWNBOARD", chip: "k10temp", label: "Tctl",
+			reading: "42000", table: testTable}
+		code, _, stderr := exec(t, append(n.flags(t), "--interval=5ms")...)
+		if code != exitConfig {
+			t.Fatalf("exit = %d, want %d (stderr: %s)", code, exitConfig, stderr)
+		}
+		if strings.Contains(stderr, "guard armed") {
+			t.Errorf("stderr %q shows the loop ran on a node that cannot be guarded", stderr)
+		}
+	})
+
+	t.Run("a reading over the limit is a trip", func(t *testing.T) {
+		n := node{board: "TESTBOARD", chip: "k10temp", label: "Tctl",
+			reading: "99000", table: testTable}
+		code, _, stderr := exec(t, append(n.flags(t), "--interval=5ms")...)
+		if code != exitTripped {
+			t.Fatalf("exit = %d, want %d (stderr: %s)", code, exitTripped, stderr)
+		}
+	})
+
+	t.Run("a sensor that stops answering is a trip, not a failure to arm", func(t *testing.T) {
+		// Rows 7 and 8 reach their stop through the retry budget, which only a
+		// guard that armed has. The node was being watched, so the job steps
+		// go: the distinction is what the node was promised, not whether the
+		// number could be read.
+		n := node{board: "TESTBOARD", chip: "k10temp", label: "Tctl",
+			reading: "no number here", table: testTable}
+		code, _, stderr := exec(t, append(n.flags(t), "--interval=1ms", "--read-retries=1")...)
+		if code != exitTripped {
+			t.Fatalf("exit = %d, want %d (stderr: %s)", code, exitTripped, stderr)
+		}
+	})
 }
 
 func TestBadFlags(t *testing.T) {
@@ -404,11 +451,12 @@ func TestLogFormats(t *testing.T) {
 // disable file suspends checking whatever the sensors say, and "whatever the
 // sensors say" includes a node the guard cannot be armed for at all.
 //
-// It is the case where it matters most. Refusing to start exits with
-// exitConfig, which arms the emergency stop exactly as a trip does, so a node
-// that cannot arm used to kill its jobs on every start and every boot — and
-// the documented way to take a node out of the mechanism could not stop it,
-// because the file was only consulted once the guard was already running.
+// It is the case where it matters most. Refusing to start exits non-zero,
+// which fails the unit exactly as a trip does, so a node that cannot arm takes
+// itself out of the scheduler on every start and every boot — and the
+// documented way to take a node out of the mechanism could not stop it,
+// because the file was only consulted once the guard was already running. It
+// killed the jobs there too, until the response was split by exit status.
 func TestDisableFileOutranksArming(t *testing.T) {
 	tests := []struct {
 		desc string

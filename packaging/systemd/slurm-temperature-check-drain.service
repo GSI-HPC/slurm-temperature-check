@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
+#
+# Started by systemd through OnFailure= when the guard exits 2, which it does
+# only before it has taken a single reading: a board that is not in the table,
+# a chip or sensor that is not present, a table that does not parse, a bad flag
+# in OPTIONS=. Like the emergency stop it has no [Install] section, so nothing
+# but that OnFailure= reaches it, and the ExecCondition= below is what tells
+# the two apart.
+#
+# It drains the node rather than killing anything. A guard that never armed
+# withdrew no promise: the node was exactly as unguarded one second before
+# someone started the unit, and nothing about the start changed its
+# temperature. What has to follow is that the scheduler stops sending work to a
+# node whose limit nobody knows -- which is what a drain is -- and not that
+# three days of somebody's job die for a missing line in a table. A node that
+# is genuinely too hot is still the emergency stop's, and the hardware's own
+# PROCHOT and thermal shutdown are underneath both of them either way.
+#
+# The drain is deliberately not undone when the board is added and the guard
+# arms. A node may have been drained for reasons that have nothing to do with
+# this package, and a thermal interlock that returns nodes to service on its
+# own is not one. The operator resumes it:
+#
+#     scontrol update NodeName=$(hostname -s) State=RESUME
+#
+# There is no fallback if the drain fails. Stopping slurmd instead would take
+# the node out of service, but slurmctld marks an unresponsive node DOWN after
+# SlurmdTimeout and kills the jobs on it, which is the outcome this unit exists
+# to avoid, arriving five minutes late. A drain that fails leaves the unit in
+# the failed state where a node health check can see it.
+
+[Unit]
+Description=Drain this node after a temperature-check guard that never armed
+Documentation=https://github.com/GSI-HPC/slurm-temperature-check
+
+# A node without SLURM has nothing to drain and nothing to take out of service,
+# which the package supports on purpose so that a node can be prepared before
+# slurmd is rolled out to it. A condition skips the unit; it does not fail it,
+# so the only way this unit reaches the failed state is a drain that was
+# attempted and did not work. A site whose scontrol is not in /usr/bin
+# overrides both this and ExecStart= with `systemctl edit`.
+ConditionFileIsExecutable=/usr/bin/scontrol
+
+# scontrol has to reach slurmctld. At boot the guard can fail before the
+# network is up, and a drain that cannot be delivered is the node quietly
+# rejoining the pool unguarded.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Which of the two responses this failure calls for. Exit 1 from the script
+# skips the unit without failing it; only a guard that exited 2 gets here.
+ExecCondition=/usr/libexec/slurm-temperature-check/failure-kind unarmed
+
+# %l is systemd's short hostname, which is what SLURM's NodeHostname defaults
+# to. The command is fixed in the unit file, as the emergency stop's are:
+# nothing in it comes from the board table, the sensors or the guard.
+ExecStart=/usr/bin/scontrol update NodeName=%l State=DRAIN "Reason=slurm-temperature-check: the guard could not arm"
+
+# Hardening. Unlike the emergency stop this one needs the network, because
+# slurmctld is on the other end of it, and it reads the site's slurm.conf and
+# authenticates through munge's socket in /run. Those are the only two
+# relaxations: no PrivateNetwork=, AF_INET added to the address families, and
+# no empty CapabilityBoundingSet=, which would decide on a site's behalf what
+# its own slurm.conf and auth plugin may reach.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077

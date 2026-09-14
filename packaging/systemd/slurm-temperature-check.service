@@ -2,20 +2,41 @@
 # Copyright 2026 GSI Helmholtzzentrum für Schwerionenforschung GmbH
 #
 # The guard. It reads sysfs and nothing else, so it runs unprivileged; every
-# privileged action lives in slurm-temperature-check-emergency-stop.service,
-# which this unit reaches only by failing.
+# privileged action lives in slurm-temperature-check-emergency-stop.service and
+# slurm-temperature-check-drain.service, which this unit reaches only by
+# failing.
 #
 # The contract is the exit status. Exit 0 means "asked to stop" and leaves
-# slurmd alone, which is why `systemctl stop` on this unit is safe. Any
-# non-zero exit means the node's temperature is no longer known to be within
-# limits, and OnFailure= turns that into the emergency stop. There is
-# deliberately no Restart=: a guard that restarted itself out of a failure
-# would leave the node running jobs it had just declared unsafe.
+# slurmd alone, which is why `systemctl stop` on this unit is safe. A non-zero
+# exit means the node's temperature is no longer being watched, and OnFailure=
+# turns that into one of two responses, according to what the node was promised
+# before it failed:
+#
+#   exit 1, a signal, the watchdog   the node was being watched and is not any
+#                                    more, so the emergency stop kills the job
+#                                    steps and stops slurmd.
+#
+#   exit 2                           the guard never took a reading -- an
+#                                    unknown board, an absent chip, a table
+#                                    that does not parse, a bad flag -- so the
+#                                    drain unit takes the node out of the
+#                                    scheduler and leaves the job steps that
+#                                    were already running alone. Failing to
+#                                    start changed nothing about the node's
+#                                    temperature.
+#
+# Both units are started and each one's ExecCondition= decides whether the
+# failure is its own, because OnFailure= itself cannot branch on an exit status.
+# Anything that cannot be positively identified as an exit 2 is the emergency
+# stop's.
+#
+# There is deliberately no Restart=: a guard that restarted itself out of a
+# failure would leave the node running jobs it had just declared unsafe.
 
 [Unit]
 Description=Stop SLURM jobs when this node exceeds its temperature limit
 Documentation=https://github.com/GSI-HPC/slurm-temperature-check
-OnFailure=slurm-temperature-check-emergency-stop.service
+OnFailure=slurm-temperature-check-emergency-stop.service slurm-temperature-check-drain.service
 
 [Service]
 Type=notify

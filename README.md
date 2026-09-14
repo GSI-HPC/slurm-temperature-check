@@ -9,20 +9,28 @@ the node must stop. systemd turns that exit into a second, privileged
 unit that kills the running job steps and stops `slurmd`. Splitting it
 that way is the whole design: the part that runs continuously on every
 node can do nothing but read sysfs, and the part that can kill jobs is
-reachable along exactly one edge, `OnFailure=`.
+reachable along exactly one edge, `OnFailure=`, and only for the failures
+that call for killing anything.
 
-Every failure mode is a stop. A sensor that cannot be read, a reading
-that cannot be parsed, a mainboard that is not in the table, a check loop
-that stops turning — each of them ends with the node out of service,
-because a temperature that is not known is not known to be safe.
+Every failure takes the node out of service, because a temperature that
+is not known is not known to be safe. How far that goes follows what the
+node was promised. A sensor that cannot be read, a reading that cannot be
+parsed, a check loop that stops turning: the node was being watched and
+is not any more, so the job steps are killed. A guard that never armed at
+all — a mainboard that is not in the table, a chip that is not present, a
+bad flag — drains the node instead and leaves the jobs already running on
+it alone, because a guard failing to start changed nothing about the
+node's temperature.
 
-It installs seven files:
+It installs nine files:
 
 | Installed file | Purpose |
 |---|---|
 | `/usr/bin/slurm-temperature-check` | The guard. Reads sysfs, compares against the board's limit, exits non-zero when the node must stop. |
-| `/usr/lib/systemd/system/slurm-temperature-check.service` | Runs the guard as an unprivileged `Type=notify` service with a watchdog, and names the emergency stop in `OnFailure=`. |
-| `/usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service` | Kills the SLURM job steps by cgroup and stops `slurmd`. Has no `[Install]` section: nothing but that `OnFailure=` starts it. |
+| `/usr/lib/systemd/system/slurm-temperature-check.service` | Runs the guard as an unprivileged `Type=notify` service with a watchdog, and names both responses to a failure in `OnFailure=`. |
+| `/usr/lib/systemd/system/slurm-temperature-check-emergency-stop.service` | Kills the SLURM job steps by cgroup and stops `slurmd`, when the guard failed while it was watching. Has no `[Install]` section: nothing but that `OnFailure=` starts it. |
+| `/usr/lib/systemd/system/slurm-temperature-check-drain.service` | Drains the node, when the guard exited without ever having armed. Leaves the running job steps alone, and has no `[Install]` section either. |
+| `/usr/libexec/slurm-temperature-check/failure-kind` | Decides which of those two a failure was, as the `ExecCondition=` of both. Holds no privilege, reads no configuration and kills nothing. |
 | `/usr/lib/systemd/system/slurmd.service.d/temperature-check.conf` | Ordering only, so at boot the guard has taken a reading before `slurmd` accepts work. |
 | `/usr/lib/sysusers.d/slurm-temperature-check.conf` | Creates the system user `slurm-temp-check`. |
 | `/etc/slurm-temperature-check/boards.conf` | The board table: which sensor to watch, and how hot it may get. |
@@ -34,7 +42,7 @@ It installs seven files:
 |---|---|
 | OS | EL9 or later (packaged and tested for Rocky Linux 9; also builds on EL10 and current Fedora). systemd 250 or later, for `systemctl kill --kill-whom=`, which EL9's 252 has. |
 | Sensors | A mainboard whose temperature is exposed through the kernel's hwmon class — `coretemp`, `k10temp`, `spd5118`, a NIC's `i350bb` and so on. `lm_sensors` is **not** required: the readings come from sysfs directly, which is where `sensors` reads them from too. `sensors` remains useful for exploring a new board by hand. |
-| SLURM | Any version, and it need not be installed for the package to install cleanly. Which cgroup the job steps land in does matter, and the emergency stop covers both layouts; see [How it works](#how-it-works). |
+| SLURM | Any version, and it need not be installed for the package to install cleanly. Which cgroup the job steps land in does matter, and the emergency stop covers both layouts; see [How it works](#how-it-works). Draining a node needs `scontrol` in `/usr/bin` — where there is none, the drain unit is skipped rather than failed. |
 | Privileges | None for the guard. The emergency stop runs as root, because stopping and killing units does. |
 | SELinux | Any mode. Everything the guard reads is a world-readable sysfs attribute and no policy module ships or is needed. |
 
@@ -46,8 +54,9 @@ It installs seven files:
 
 Installing does not start anything. **Confirm the node's mainboard is in
 the table before enabling the unit**: a guard that cannot resolve its
-board refuses to start, and a guard that fails to start arms the
-emergency stop, which on a busy node means killing the jobs on it.
+board refuses to start, and a guard that fails to start drains the node.
+Nothing that is already running on it dies, but it takes no further work
+until someone resumes it.
 
 ```console
 # cat /sys/devices/virtual/dmi/id/board_name          # the table's section name
@@ -82,6 +91,21 @@ If `--list` shows a sensor the table does not name yet, add a section for
 the board to `/etc/slurm-temperature-check/boards.conf` and send it as a
 pull request, so the next node of that model works out of the box.
 
+Where the package reaches nodes before their boards are enrolled — a base
+image, a configuration-management rollout that enables units by class —
+put the disable file on the ones that are not enrolled yet:
+
+```console
+# touch /etc/slurm-temperature-check/disable
+```
+
+A guard started on such a node reports itself suspended and does nothing
+whatever, to the node's SLURM state included, until the file is removed;
+that is specification row 13. Enrolling the node is then: add the board,
+`--check`, remove the file. The cost is that the file is fail-open. A node
+left with it is not guarded, and `systemctl status` and `--check` saying
+so is the only thing that will point it out.
+
 ## How it works
 
 The guard loop is one decision, taken once per `--interval`:
@@ -99,15 +123,33 @@ stateDiagram-v2
     Tolerate --> Trip: budget spent
     Compare --> Check: at or below the limit
     Compare --> Trip: above the limit
-    Trip --> [*]: exit 1, OnFailure fires
+    Trip --> [*]: exit 1, the emergency stop runs
 ```
 
 The guard never stops anything itself; it reports its verdict by exiting.
 Exit 0 means "asked to stop" and leaves `slurmd` alone, which is why
 `systemctl stop slurm-temperature-check` is safe to run at any time. Any
-non-zero exit puts the unit into the failed state, and systemd starts
-`slurm-temperature-check-emergency-stop.service`, which runs three
-commands in this order:
+non-zero exit puts the unit into the failed state, and systemd starts the
+two units named in `OnFailure=`. Which of them acts follows the exit
+status:
+
+| The guard exited | What that means | What runs |
+|---|---|---|
+| 1, or on a signal, or killed by the watchdog | It had armed: the node was being watched and is not any more | The emergency stop |
+| 2 | It never armed, and never took a reading at all | The drain |
+
+`OnFailure=` cannot branch on an exit status, so both units are started
+and each one's `ExecCondition=` runs
+`/usr/libexec/slurm-temperature-check/failure-kind`, which exits 0 for
+the failures that are its unit's and 1 for the rest; an `ExecCondition=`
+that exits 1 skips the unit without failing it. It reads the status from
+the `MONITOR_EXIT_CODE` and `MONITOR_EXIT_STATUS` systemd sets in a unit
+started through `OnFailure=`, and falls back to asking systemd for the
+guard unit's `ExecMainCode` and `ExecMainStatus`. Anything it cannot
+positively identify as an exit 2 belongs to the emergency stop, so a
+failure it cannot read is a kill and never a silent nothing.
+
+The emergency stop runs three commands in this order:
 
 ```console
 # systemctl kill --signal=SIGKILL --kill-whom=all slurmstepd.scope
@@ -127,6 +169,42 @@ stop would leave every job process running. `stop` comes last so the unit
 ends in a stopped state, which also disarms a `Restart=` a site may have
 added to `slurmd.service`.
 
+The drain runs one:
+
+```console
+# scontrol update NodeName=$(hostname -s) State=DRAIN Reason="slurm-temperature-check: the guard could not arm"
+```
+
+The node name is systemd's `%l` specifier in the unit file, the hostname
+truncated at the first dot, which is what SLURM's `NodeHostname` defaults
+to; a site whose `NodeName` is something else overrides the unit with
+`systemctl edit`.
+
+Exit 2 is returned only before a single reading has been taken — a board
+that is not in the table, a chip or sensor that is not present, a table
+that does not parse, a bad flag in `OPTIONS=` — and never once the check
+loop is running, where the only failure is exit 1. A node that exits 2 was
+therefore never guarded, and the guard failing to start made it no hotter
+than it was a second earlier: it was exactly as unwatched before somebody
+ran `systemctl start`. What has to follow is that the scheduler stops
+sending work to a node whose limit nobody knows, which is what a drain is.
+Killing the jobs instead answers a missing line in a table with the
+response reserved for a node that is too hot, and the hardware's own
+`PROCHOT` and thermal shutdown sit underneath either response: this
+package is the policy limit above them, not the last line of defence.
+
+The drain is deliberately not undone when the board is added and the guard
+arms. A node may have been drained for reasons that have nothing to do
+with this package, and a thermal interlock that returns nodes to service
+on its own is not one; the operator resumes it with `scontrol update
+NodeName=$(hostname -s) State=RESUME`. If the drain itself fails — no
+`scontrol` on the node, no route to `slurmctld` — the unit lands in the
+failed state and nothing further is attempted. Stopping `slurmd` instead
+would also take the node out of service, but `slurmctld` marks an
+unresponsive node DOWN after `SlurmdTimeout` and kills the jobs on it,
+which is the outcome the drain exists to avoid, arriving five minutes
+late.
+
 The `slurmd` drop-in this package installs carries ordering and nothing
 else:
 
@@ -145,8 +223,9 @@ It is deliberately not `Wants=` either. A `Wants=` here would *start* the
 guard whenever `slurmd` starts, whether or not the guard was ever
 enabled — an `[Install]` section has no say over a dependency another
 unit declares — so a node with the package installed but its board not
-yet in the table would kill its own jobs on the next `systemctl restart
-slurmd` or reboot. `After=` alone orders the two whenever both are
+yet in the table would take itself out of the scheduler on the next
+`systemctl restart slurmd` or reboot, and did kill its own jobs there
+while every failure still ran the emergency stop. `After=` alone orders the two whenever both are
 started, which is all this drop-in is for.
 
 A loop that stops turning is the one failure nothing else would notice,
@@ -167,7 +246,9 @@ The table below is the specification. Rows 1 to 10 are `TestTruthTable` in
 `TestCannotArm`, `TestDisableFileOutranksArming` and
 `TestRearmWhenResumed` in `cmd/slurm-temperature-check/main_test.go`,
 because refusing to start is the command's decision rather than the
-loop's.
+loop's. Which of the two responses an outcome gets is decided by the exit
+status and pinned by `TestExitCodeSeparatesArmingFromTripping` beside
+them.
 
 | # | Disable file | Override file | Sensors | Outcome |
 |---|---|---|---|---|
@@ -181,17 +262,23 @@ loop's.
 | 8 | absent | absent | not a number | tolerate, then stop |
 | 9 | absent | absent | above the limit | stop |
 | 10 | absent | absent | at or below the limit | keep running |
-| 11 | absent | absent | board not in the table | refuse to start |
-| 12 | absent | absent | configured chip or sensor absent | refuse to start |
+| 11 | absent | absent | board not in the table | refuse to start, drain the node |
+| 12 | absent | absent | configured chip or sensor absent | refuse to start, drain the node |
 | 13 | present | any | anything rows 11 and 12 would refuse to start for | keep running, no reading taken |
 
+"Stop" in the Outcome column is the emergency stop: the job steps are
+killed and `slurmd` is stopped. Rows 11 and 12 are the other response,
+where the node is drained and what is running on it is left to finish.
+Both take the node out of service; only one of them costs the work in
+flight.
+
 Row 13 is row 1 applied to a node that cannot be guarded at all. Refusing
-to start exits non-zero, which arms the emergency stop exactly as a trip
-does, so a node whose board is missing from the table would otherwise
-kill its jobs on every start and every reboot — and the disable file, the
-documented way to take a node out of the mechanism, could not stop it.
-While the file is present the guard waits instead, logs why it cannot
-arm, and arms itself within one interval of the file being removed.
+to start exits non-zero, which fails the unit exactly as a trip does, so
+a node whose board is missing from the table would otherwise drain itself
+on every start and every reboot — and the disable file, the documented
+way to take a node out of the mechanism, could not stop it. While the
+file is present the guard waits instead, logs why it cannot arm, and arms
+itself within one interval of the file being removed.
 
 "Tolerate, then stop" is `--read-retries` consecutive failures absorbed
 and the next one fatal. At the default of two failures and a ten second
@@ -315,6 +402,38 @@ Then remove the override, start the guard again and return the node:
 # scontrol update NodeName=$(hostname -s) State=RESUME
 ```
 
+The other response needs no heat at all, only a guard that cannot arm.
+**This one leaves `slurmd` and the running job steps alone**, that being
+the property under test, so it can be run on a node with work on it:
+
+```console
+# mv /etc/slurm-temperature-check/boards.conf{,.away}
+# systemctl restart slurm-temperature-check
+Job for slurm-temperature-check.service failed because the control process exited with error code.
+# systemctl status slurm-temperature-check
+   Active: failed (Result: exit-code)
+  ... ERROR cannot arm the guard error="open board table /etc/slurm-temperature-check/boards.conf: no such file or directory"
+# journalctl -u slurm-temperature-check-drain -n 5
+  ... slurm-temperature-check.service exited 2 without ever taking a reading: draining this node, its running job steps are left alone
+# sinfo -n $(hostname -s) -o '%T %E'
+  drained slurm-temperature-check: the guard could not arm
+# systemctl status slurmd                        # untouched: active (running)
+# systemctl status slurm-temperature-check-emergency-stop
+   Active: inactive (dead)
+   Condition: start condition unmet
+```
+
+The emergency stop sitting there with its condition unmet is what "the
+jobs were left alone" looks like from the outside: it was started, it
+asked which kind of failure this was, and it stood down. Put the table
+back, start the guard and return the node:
+
+```console
+# mv /etc/slurm-temperature-check/boards.conf{.away,}
+# systemctl start slurm-temperature-check
+# scontrol update NodeName=$(hostname -s) State=RESUME
+```
+
 ## Security model
 
 The guard runs as `slurm-temp-check`, an unprivileged system user with no
@@ -328,14 +447,32 @@ its runtime directory, and a system-call filter. `systemd-analyze
 security` scores it inside systemd's "OK" band, and CI fails if a
 hardening directive is dropped.
 
-The privileged half is `slurm-temperature-check-emergency-stop.service`.
-It runs as root because stopping and killing units does, and it is
-reachable along exactly one edge: it has no `[Install]` section, nothing
-`Wants=` or `Requires=` it, and only the guard's `OnFailure=` names it.
-Its three commands are fixed in the unit file — no arguments come from
-the configuration, from the sensors or from anything else that could be
-influenced — so the worst a corrupted board table can do is refuse to
-arm, never widen what gets killed.
+The privileged half is two units,
+`slurm-temperature-check-emergency-stop.service` and
+`slurm-temperature-check-drain.service`. Both run as root — stopping and
+killing units does, and so does draining a node — and both are reachable
+along exactly one edge: neither has an `[Install]` section, nothing
+`Wants=` or `Requires=` either of them, and only the guard's `OnFailure=`
+names them. Their commands are fixed in the unit files — no argument
+comes from the configuration, from the sensors or from anything else that
+could be influenced, and the node name the drain passes to `scontrol` is
+systemd's own `%l` specifier — so the worst a corrupted board table can
+do is refuse to arm, never widen what gets killed.
+
+Deciding between the two takes exactly one input, the exit status of the
+guard's own unit as systemd reports it, and that decision is the whole of
+`/usr/libexec/slurm-temperature-check/failure-kind`: it runs as the
+`ExecCondition=` of both units, holds no privilege, opens no file, and
+executes nothing but a `systemctl show` when systemd has not already put
+the status in its environment.
+
+The two are not sandboxed alike. The emergency stop needs systemd's
+private D-Bus socket and nothing else, so it keeps `PrivateNetwork=yes`,
+`RestrictAddressFamilies=AF_UNIX` and an empty `CapabilityBoundingSet=`.
+The drain has to reach `slurmctld` across the network and authenticate to
+it, so it has none of those three; deciding on a site's behalf what its
+own `slurm.conf` and auth plugin may reach is not something this package
+can do from here. That is the price of the response that kills nothing.
 
 The DMI attributes next to `board_name` that are *not* world-readable
 (`board_serial`, `product_uuid`, mode 0400) are deliberately never
@@ -345,7 +482,9 @@ touched.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| `systemctl start` fails immediately and the jobs died with it | The guard could not arm: the board is not in the table, or the configured chip or sensor is not present | `journalctl -u slurm-temperature-check -n 20` names which; `slurm-temperature-check --list` shows what the node actually has, and `--check` resolves the table against it |
+| `systemctl start` fails immediately and the node is drained | The guard could not arm: the board is not in the table, or the configured chip or sensor is not present. The jobs that were running are untouched | `journalctl -u slurm-temperature-check -n 20` names which; `slurm-temperature-check --list` shows what the node actually has, and `--check` resolves the table against it |
+| A node is drained with `Reason=slurm-temperature-check: the guard could not arm` | The same thing, as the scheduler sees it. It is not undone when the board is added: a node can be drained for reasons that are none of this package's business | Fix what `journalctl -u slurm-temperature-check` reports, `--check`, start the guard, then `scontrol update NodeName=$(hostname -s) State=RESUME` |
+| `slurm-temperature-check-drain.service` is in the failed state | The drain was attempted and did not work: no route to `slurmctld`, authentication, or a `NodeName` that is not this node's short hostname | `journalctl -u slurm-temperature-check-drain`; `scontrol show node $(hostname -s)`. A site whose `scontrol` is not in `/usr/bin`, or whose `NodeName` differs, overrides the unit with `systemctl edit`. The node is unguarded meanwhile |
 | `cannot arm the guard ... is not in the table` | A model whose board name is not a section header yet | `cat /sys/devices/virtual/dmi/id/board_name`, then add the section; the message lists every board the table does know |
 | `no hwmon chip matches "k10temp-pci-00c3"` | The chip moved to a different PCI function or i2c bus, usually after a firmware or kernel change | `slurm-temperature-check --list`; either pin the new full name or use the bare driver prefix (`k10temp`), which matches whatever address it lands on |
 | `chip "..." has no sensor "Tdie"` | The driver renamed or dropped the label | The message lists the chip's available attributes and labels; `sensors` shows the same names |
@@ -354,6 +493,7 @@ touched.
 | `systemctl stop slurmd` also kills the guard, or vice versa | A leftover `BindsTo=` from an earlier setup | `systemctl cat slurmd.service` — the drop-in this package installs carries `After=` only; remove any local override that adds `BindsTo=` or `Wants=` |
 | Jobs survived a trip | `slurmstepd.scope` does not exist and the steps are not in `slurmd`'s cgroup either | `systemd-cgls -u slurmd.service` and `systemctl status slurmstepd.scope` while a job runs, to see where the steps actually land; `journalctl -u slurm-temperature-check-emergency-stop` shows what the three commands reported |
 | `slurmd` came back by itself after a trip | `Restart=` on `slurmd.service`, winning a race against the final `stop` | `systemctl show -p Restart slurmd.service`; the node is drained by `slurmctld` regardless, but consider removing `Restart=` |
+| A guard that cannot arm kills the jobs instead of draining the node | A systemd too old for `ExecCondition=`, or units and classifier out of step after a partial upgrade | `systemctl cat slurm-temperature-check-emergency-stop` shows the `ExecCondition=`; `journalctl -u slurm-temperature-check-emergency-stop` carries the line naming which kind of failure it acted on |
 | Nothing happens on a node that should be guarded | The unit is not enabled, or the disable file is there | `systemctl is-enabled slurm-temperature-check`; `ls /etc/slurm-temperature-check/disable` |
 | Readings differ from `sensors` | A different attribute of the same chip | `slurm-temperature-check --list` prints the attribute and label of every reading; the default is the chip's lowest-numbered attribute |
 
@@ -375,6 +515,7 @@ sysusers.d always are; `userdel slurm-temp-check` removes it.
 
 | Approach | Verdict |
 |---|---|
+| One response to every failure: kill the job steps whatever the guard exited with | How this began, and the simpler invariant to state. It answers a deployment mistake — a board missing from the table, a typo in a `boards.conf` pushed by configuration management — with the response reserved for a node that is too hot, on a node whose temperature nobody had promised to watch in the first place. Worse, that mistake is correlated across a fleet where a thermal trip is not: one bad table plus a rollout that restarts units is every node killing its jobs at once. The exit status already distinguished the two cases; only the units did not. |
 | `BindsTo=slurm-temperature-check.service` on `slurmd.service` | The obvious spelling, and how this mechanism began. It couples the lifecycles in both directions: every stop of the guard stops `slurmd` and kills the jobs, including during a package upgrade or a sensor repair, and `systemctl restart slurmd` becomes impossible without losing the workload. `OnFailure=` couples only the one direction that matters. |
 | Killing job processes by PID (`pgrep` / `pstree`) | What the internal predecessor did. `pstree -p` truncates its output at the terminal width unless given `-l`, so a job tree wider than that yields truncated PIDs — and a truncated PID is a real, unrelated process that then gets `SIGKILL`. Collecting PIDs and killing them later is racy besides. Cgroup membership is exact, complete and needs no `psmisc`. |
 | `echo 1 > /sys/fs/cgroup/.../cgroup.kill` | Strictly the most thorough: the kernel kills the whole subtree atomically, including processes that fork during the kill (Linux 5.14+, so EL9 has it). It needs the package to know SLURM's cgroup layout, which varies with the plugin and the SLURM version, where `systemctl kill` asks systemd for the same thing by unit name. Worth revisiting if a layout is ever found that `--kill-whom=all` does not cover. |
@@ -417,7 +558,18 @@ Re-verify against the versions actually deployed.
   "base board product name", mode 0444. `board_serial` and `product_uuid`
   beside it are 0400.
 - systemd: `OnFailure=` starts its units when the unit enters the failed
-  state, which a non-zero exit does and a clean `stop` does not.
+  state, which a non-zero exit does and a clean `stop` does not. It takes
+  a list, and it cannot branch: every unit named is started for every
+  failure. `ExecCondition=` is what turns that back into a branch — exit
+  0 runs the unit, 1 to 254 skips it *without* failing it, and 255 or an
+  abnormal exit fails it. A unit started through `OnFailure=` is given
+  `MONITOR_SERVICE_RESULT`, `MONITOR_EXIT_CODE`, `MONITOR_EXIT_STATUS`,
+  `MONITOR_INVOCATION_ID` and `MONITOR_UNIT` when it is `Type=oneshot`
+  (v249 and later; EL9 ships 252). `MONITOR_EXIT_CODE` is `exited`,
+  `killed` or `dumped`, where `systemctl show -P ExecMainCode` reports
+  the raw `si_code` — 1, 2, 3 for the same three — and the distinction
+  matters, because a process killed by `SIGINT` reports status 2 as well.
+  `%l` is the hostname truncated at the first dot.
   `systemctl kill --kill-whom=all` signals every process in a unit's
   cgroup regardless of the unit's `KillMode=`; the option was spelled
   `--kill-who` before v250 and EL9 ships 252. `Type=notify` with
@@ -429,7 +581,14 @@ Re-verify against the versions actually deployed.
   `slurmstepd.scope` and moves each step into it, outside `slurmd`'s own
   cgroup, so steps survive a `slurmd` restart. Which of the two layouts a
   node uses is worth confirming with `systemd-cgls -u slurmd.service`
-  while a job runs; the emergency stop covers both.
+  while a job runs; the emergency stop covers both. A drained node
+  finishes the jobs it has and is given no new ones, where a node whose
+  `slurmd` has stopped answering is marked DOWN after `SlurmdTimeout`
+  (300s by default) and has its jobs killed with it — which is why the
+  response to a guard that never armed is the first and not the second.
+  `scontrol update NodeName=... State=DRAIN` requires a `Reason=`, and
+  `NodeName` is SLURM's name for the node, which defaults to its short
+  hostname but need not be it.
 
 ## AI usage disclosure
 
